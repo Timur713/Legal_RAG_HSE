@@ -267,7 +267,66 @@ class ChunkedBm25Retriever:
         return ranked_doc_ids, ranked_scores
 
 
-AVAILABLE_RETRIEVERS = ("tfidf", "bm25", "chunked_tfidf", "chunked_bm25")
+@dataclass
+class ReciprocalRankFusionRetriever:
+    component_names: tuple[str, ...]
+    top_k: int = 5
+    chunk_size: int = 1600
+    chunk_stride: int = 800
+    use_lemmas: bool = False
+    rrf_k: int = 60
+    retrievers: list[RetrieverProtocol] = field(init=False, default_factory=list)
+
+    def fit(
+        self,
+        documents: pd.DataFrame,
+        train_queries: pd.DataFrame | None = None,
+    ) -> "ReciprocalRankFusionRetriever":
+        if not self.component_names:
+            raise ValueError("hybrid_rrf requires at least one component retriever.")
+
+        self.retrievers = []
+        for name in self.component_names:
+            if name == "hybrid_rrf":
+                raise ValueError("hybrid_rrf cannot include itself as a component retriever.")
+            retriever = create_retriever(
+                name,
+                top_k=self.top_k,
+                chunk_size=self.chunk_size,
+                chunk_stride=self.chunk_stride,
+                use_lemmas=self.use_lemmas,
+            )
+            retriever.fit(documents, train_queries=train_queries)
+            self.retrievers.append(retriever)
+        return self
+
+    def retrieve(
+        self,
+        questions: Sequence[object],
+        top_k: int | None = None,
+    ) -> tuple[list[list[str]], list[list[float]]]:
+        if not self.retrievers:
+            raise ValueError("Retriever is not fitted")
+
+        limit = top_k or self.top_k
+        component_rankings = [retriever.retrieve(questions, top_k=limit)[0] for retriever in self.retrievers]
+
+        fused_doc_ids: list[list[str]] = []
+        fused_scores: list[list[float]] = []
+        for query_index in range(len(questions)):
+            scores: dict[str, float] = {}
+            for ranking in component_rankings:
+                for rank, doc_id in enumerate(ranking[query_index], start=1):
+                    scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (self.rrf_k + rank)
+
+            ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))[:limit]
+            fused_doc_ids.append([doc_id for doc_id, _ in ranked])
+            fused_scores.append([float(score) for _, score in ranked])
+
+        return fused_doc_ids, fused_scores
+
+
+AVAILABLE_RETRIEVERS = ("tfidf", "bm25", "chunked_tfidf", "chunked_bm25", "hybrid_rrf")
 
 
 def create_retriever(
@@ -277,6 +336,8 @@ def create_retriever(
     chunk_size: int = 1600,
     chunk_stride: int | None = None,
     use_lemmas: bool = False,
+    hybrid_retrievers: Sequence[str] | None = None,
+    rrf_k: int = 60,
 ) -> RetrieverProtocol:
     if name == "tfidf":
         return TfidfRetriever(top_k=top_k, use_lemmas=use_lemmas)
@@ -296,6 +357,16 @@ def create_retriever(
             chunk_stride=resolve_chunk_stride(chunk_size, chunk_stride),
             use_lemmas=use_lemmas,
         )
+    if name == "hybrid_rrf":
+        component_names = tuple(str(component) for component in (hybrid_retrievers or ()))
+        return ReciprocalRankFusionRetriever(
+            component_names=component_names,
+            top_k=top_k,
+            chunk_size=chunk_size,
+            chunk_stride=resolve_chunk_stride(chunk_size, chunk_stride),
+            use_lemmas=use_lemmas,
+            rrf_k=rrf_k,
+        )
     raise ValueError(f"Unknown retriever: {name}")
 
 
@@ -305,6 +376,8 @@ def get_retriever_params(
     chunk_size: int = 1600,
     chunk_stride: int | None = None,
     use_lemmas: bool = False,
+    hybrid_retrievers: Sequence[str] | None = None,
+    rrf_k: int = 60,
 ) -> dict[str, int | str | bool]:
     if name in {"tfidf", "bm25"}:
         return {"name": name, "use_lemmas": bool(use_lemmas)}
@@ -315,6 +388,15 @@ def get_retriever_params(
             "chunk_stride": int(resolve_chunk_stride(chunk_size, chunk_stride)),
             "use_lemmas": bool(use_lemmas),
         }
+    if name == "hybrid_rrf":
+        return {
+            "name": name,
+            "chunk_size": int(chunk_size),
+            "chunk_stride": int(resolve_chunk_stride(chunk_size, chunk_stride)),
+            "use_lemmas": bool(use_lemmas),
+            "hybrid_retrievers": [str(component) for component in (hybrid_retrievers or ())],
+            "rrf_k": int(rrf_k),
+        }
     raise ValueError(f"Unknown retriever: {name}")
 
 
@@ -323,6 +405,7 @@ __all__ = [
     "Bm25Retriever",
     "ChunkedBm25Retriever",
     "ChunkedTfidfRetriever",
+    "ReciprocalRankFusionRetriever",
     "RetrieverProtocol",
     "TfidfRetriever",
     "build_ranked_predictions",

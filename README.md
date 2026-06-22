@@ -187,6 +187,23 @@ python scripts/run_baseline_validation.py \
   --save-test-predictions
 ```
 
+Гибрид двух сильных sparse-моделей через Reciprocal Rank Fusion:
+
+```bash
+python scripts/run_baseline_validation.py \
+  --paths configs/paths.local.yaml \
+  --experiment-name hybrid_rrf_bm25_chunked_bm25_lemma_validation \
+  --retriever hybrid_rrf \
+  --hybrid-retrievers bm25 chunked_bm25 \
+  --chunk-size 1600 \
+  --chunk-stride 800 \
+  --rrf-k 60 \
+  --top-k 5 \
+  --extra-metric-k 20 \
+  --use-lemmas \
+  --save-test-predictions
+```
+
 Скрипт сохраняет:
 
 - `strict_cv` и `strict_holdout` предсказания в `outputs/predictions/`

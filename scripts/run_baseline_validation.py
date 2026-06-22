@@ -90,6 +90,18 @@ def parse_args() -> argparse.Namespace:
         help="Apply Russian lemmatization with pymorphy3 during tokenization.",
     )
     parser.add_argument(
+        "--hybrid-retrievers",
+        nargs="*",
+        default=(),
+        help="Component retrievers for hybrid_rrf, for example: --hybrid-retrievers bm25 chunked_bm25.",
+    )
+    parser.add_argument(
+        "--rrf-k",
+        type=int,
+        default=60,
+        help="Reciprocal Rank Fusion constant for hybrid_rrf.",
+    )
+    parser.add_argument(
         "--save-test-predictions",
         action="store_true",
         help="Also fit on the full train corpus and save test predictions for submission generation.",
@@ -145,6 +157,18 @@ def get_retrieve_k(args: argparse.Namespace, metric_ks: list[int]) -> int:
         )
 
     return retrieve_k
+
+
+def validate_hybrid_args(args: argparse.Namespace) -> None:
+    if args.retriever != "hybrid_rrf":
+        return
+
+    if len(args.hybrid_retrievers) < 2:
+        raise ValueError("hybrid_rrf requires at least two component retrievers in --hybrid-retrievers.")
+    if any(component == "hybrid_rrf" for component in args.hybrid_retrievers):
+        raise ValueError("hybrid_rrf cannot include hybrid_rrf as a component retriever.")
+    if args.rrf_k <= 0:
+        raise ValueError("rrf_k must be positive.")
 
 
 def compute_recall_metrics(
@@ -236,6 +260,7 @@ def main() -> int:
     args = parse_args()
     metric_ks = get_metric_ks(args)
     retrieve_k = get_retrieve_k(args, metric_ks)
+    validate_hybrid_args(args)
 
     paths = load_paths_config(args.paths)
     ensure_output_dirs(paths)
@@ -262,6 +287,8 @@ def main() -> int:
         chunk_size=args.chunk_size,
         chunk_stride=args.chunk_stride,
         use_lemmas=args.use_lemmas,
+        hybrid_retrievers=args.hybrid_retrievers,
+        rrf_k=args.rrf_k,
     )
     retriever_runtime_params = {
         key: value

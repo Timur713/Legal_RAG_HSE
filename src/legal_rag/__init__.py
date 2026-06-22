@@ -16,6 +16,7 @@ from .retrieval import (
     Bm25Retriever,
     ChunkedBm25Retriever,
     ChunkedTfidfRetriever,
+    ReciprocalRankFusionRetriever,
     create_retriever,
     get_retriever_params,
 )
@@ -26,6 +27,7 @@ __all__ = [
     "Bm25Retriever",
     "ChunkedBm25Retriever",
     "ChunkedTfidfRetriever",
+    "ReciprocalRankFusionRetriever",
     "PathsConfig",
     "TfidfRetriever",
     "build_ranked_predictions",
