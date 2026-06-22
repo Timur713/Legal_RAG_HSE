@@ -1,0 +1,47 @@
+{
+  "experiment_name": "baseline_validation",
+  "metric_name": "recall@5",
+  "strict_cv_mean": 0.31823061400210473,
+  "strict_cv_std": 0.04004561548251626,
+  "strict_holdout": 0.4264705882352941,
+  "num_documents": 468,
+  "num_train_queries": 700,
+  "num_dev_queries": 564,
+  "num_holdout_queries": 136,
+  "top_k": 5,
+  "validation_splits": "/Users/a1/Desktop/dev/Legal_RAG_HSE_3/data/processed/validation/validation_splits.csv",
+  "fold_metrics": [
+    {
+      "split": "strict_cv",
+      "fold": 0,
+      "num_train_queries": 423,
+      "num_val_queries": 141,
+      "num_val_gold_docs": 22,
+      "recall@5": 0.3617021276595745
+    },
+    {
+      "split": "strict_cv",
+      "fold": 1,
+      "num_train_queries": 418,
+      "num_val_queries": 146,
+      "num_val_gold_docs": 23,
+      "recall@5": 0.3219178082191781
+    },
+    {
+      "split": "strict_cv",
+      "fold": 2,
+      "num_train_queries": 433,
+      "num_val_queries": 131,
+      "num_val_gold_docs": 18,
+      "recall@5": 0.33587786259541985
+    },
+    {
+      "split": "strict_cv",
+      "fold": 3,
+      "num_train_queries": 418,
+      "num_val_queries": 146,
+      "num_val_gold_docs": 26,
+      "recall@5": 0.2534246575342466
+    }
+  ]
+}
