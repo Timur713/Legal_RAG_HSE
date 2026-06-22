@@ -1,14 +1,16 @@
 {
-  "experiment_name": "baseline_validation",
-  "retriever_name": "tfidf",
+  "experiment_name": "chunked_tfidf_validation",
+  "retriever_name": "chunked_tfidf",
   "retriever_params": {
-    "name": "tfidf"
+    "name": "chunked_tfidf",
+    "chunk_size": 1600,
+    "chunk_stride": 800
   },
   "metric_name": "recall@5",
-  "metric_value": 0.2896551724137931,
-  "strict_cv_mean": 0.3492344295675202,
-  "strict_cv_std": 0.05262867993850672,
-  "strict_holdout": 0.2896551724137931,
+  "metric_value": 0.3103448275862069,
+  "strict_cv_mean": 0.3701032828353542,
+  "strict_cv_std": 0.08365574242779891,
+  "strict_holdout": 0.3103448275862069,
   "num_documents": 468,
   "num_train_queries": 700,
   "num_dev_queries": 555,
@@ -26,8 +28,8 @@
       "num_train_queries": 391,
       "num_val_queries": 164,
       "num_val_gold_docs": 22,
-      "recall@5": 0.3475609756097561,
-      "recall@20": 0.6463414634146342
+      "recall@5": 0.4573170731707317,
+      "recall@20": 0.6707317073170732
     },
     {
       "split": "strict_cv",
@@ -35,8 +37,8 @@
       "num_train_queries": 421,
       "num_val_queries": 134,
       "num_val_gold_docs": 22,
-      "recall@5": 0.30597014925373134,
-      "recall@20": 0.582089552238806
+      "recall@5": 0.291044776119403,
+      "recall@20": 0.5746268656716418
     },
     {
       "split": "strict_cv",
@@ -44,8 +46,8 @@
       "num_train_queries": 415,
       "num_val_queries": 140,
       "num_val_gold_docs": 23,
-      "recall@5": 0.4357142857142857,
-      "recall@20": 0.6428571428571429
+      "recall@5": 0.45,
+      "recall@20": 0.6714285714285714
     },
     {
       "split": "strict_cv",
@@ -53,20 +55,20 @@
       "num_train_queries": 438,
       "num_val_queries": 117,
       "num_val_gold_docs": 23,
-      "recall@5": 0.3076923076923077,
-      "recall@20": 0.5897435897435898
+      "recall@5": 0.28205128205128205,
+      "recall@20": 0.5299145299145299
     }
   ],
   "all_metrics": {
     "recall@5": {
-      "strict_cv_mean": 0.3492344295675202,
-      "strict_cv_std": 0.05262867993850672,
-      "strict_holdout": 0.2896551724137931
+      "strict_cv_mean": 0.3701032828353542,
+      "strict_cv_std": 0.08365574242779891,
+      "strict_holdout": 0.3103448275862069
     },
     "recall@20": {
-      "strict_cv_mean": 0.6152579370635431,
-      "strict_cv_std": 0.029491632041570313,
-      "strict_holdout": 0.6
+      "strict_cv_mean": 0.611675418582954,
+      "strict_cv_std": 0.06147260101604638,
+      "strict_holdout": 0.6413793103448275
     }
   }
 }
