@@ -1,0 +1,73 @@
+{
+  "experiment_name": "bm25_lemma_validation",
+  "retriever_name": "bm25",
+  "retriever_params": {
+    "name": "bm25",
+    "use_lemmas": true
+  },
+  "metric_name": "recall@5",
+  "metric_value": 0.4206896551724138,
+  "strict_cv_mean": 0.5171163691504063,
+  "strict_cv_std": 0.059741033632234576,
+  "strict_holdout": 0.4206896551724138,
+  "num_documents": 468,
+  "num_train_queries": 700,
+  "num_dev_queries": 555,
+  "num_holdout_queries": 145,
+  "top_k": 5,
+  "retrieve_k": 20,
+  "extra_metric_ks": [
+    20
+  ],
+  "validation_splits": "/content/legal-rag-hackathon/data/processed/validation/validation_splits.csv",
+  "fold_metrics": [
+    {
+      "split": "strict_cv",
+      "fold": 0,
+      "num_train_queries": 391,
+      "num_val_queries": 164,
+      "num_val_gold_docs": 22,
+      "recall@5": 0.5670731707317073,
+      "recall@20": 0.8780487804878049
+    },
+    {
+      "split": "strict_cv",
+      "fold": 1,
+      "num_train_queries": 421,
+      "num_val_queries": 134,
+      "num_val_gold_docs": 22,
+      "recall@5": 0.4626865671641791,
+      "recall@20": 0.7388059701492538
+    },
+    {
+      "split": "strict_cv",
+      "fold": 2,
+      "num_train_queries": 415,
+      "num_val_queries": 140,
+      "num_val_gold_docs": 23,
+      "recall@5": 0.5857142857142857,
+      "recall@20": 0.7857142857142857
+    },
+    {
+      "split": "strict_cv",
+      "fold": 3,
+      "num_train_queries": 438,
+      "num_val_queries": 117,
+      "num_val_gold_docs": 23,
+      "recall@5": 0.452991452991453,
+      "recall@20": 0.6752136752136753
+    }
+  ],
+  "all_metrics": {
+    "recall@5": {
+      "strict_cv_mean": 0.5171163691504063,
+      "strict_cv_std": 0.059741033632234576,
+      "strict_holdout": 0.4206896551724138
+    },
+    "recall@20": {
+      "strict_cv_mean": 0.7694456778912548,
+      "strict_cv_std": 0.0739556683311681,
+      "strict_holdout": 0.7310344827586207
+    }
+  }
+}
