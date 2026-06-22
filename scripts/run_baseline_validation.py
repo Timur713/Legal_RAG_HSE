@@ -85,6 +85,11 @@ def parse_args() -> argparse.Namespace:
         help="Chunk stride in characters for chunked retrievers. Defaults to chunk-size // 2.",
     )
     parser.add_argument(
+        "--use-lemmas",
+        action="store_true",
+        help="Apply Russian lemmatization with pymorphy3 during tokenization.",
+    )
+    parser.add_argument(
         "--save-test-predictions",
         action="store_true",
         help="Also fit on the full train corpus and save test predictions for submission generation.",
@@ -256,6 +261,7 @@ def main() -> int:
         args.retriever,
         chunk_size=args.chunk_size,
         chunk_stride=args.chunk_stride,
+        use_lemmas=args.use_lemmas,
     )
     retriever_runtime_params = {
         key: value

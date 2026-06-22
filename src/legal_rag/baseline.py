@@ -8,12 +8,13 @@ import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import linear_kernel
 
-from .preprocessing import normalize_text, tokenize
+from .preprocessing import normalize_text, tokenize_with_options
 
 
 @dataclass
 class TfidfRetriever:
     top_k: int = 5
+    use_lemmas: bool = False
     vectorizer: TfidfVectorizer = field(init=False)
     doc_ids: list[str] = field(init=False, default_factory=list)
     doc_matrix: object = field(init=False, default=None)
@@ -32,7 +33,7 @@ class TfidfRetriever:
             raise ValueError(f"Documents dataframe is missing columns: {missing_columns}")
 
         self.vectorizer = TfidfVectorizer(
-            tokenizer=tokenize,
+            tokenizer=lambda text: tokenize_with_options(text, use_lemmas=self.use_lemmas),
             lowercase=False,
             token_pattern=None,
         )

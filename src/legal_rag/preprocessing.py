@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 
 TOKEN_RE = re.compile(r"[а-яёa-z0-9]+", re.IGNORECASE)
 
@@ -27,3 +28,26 @@ def tokenize(text: object) -> list[str]:
         for token in TOKEN_RE.findall(normalized)
         if len(token) > 2 and token not in RU_STOPWORDS
     ]
+
+
+@lru_cache(maxsize=1)
+def get_morph_analyzer():
+    from pymorphy3 import MorphAnalyzer
+
+    return MorphAnalyzer()
+
+
+def lemmatize_tokens(tokens: list[str]) -> list[str]:
+    analyzer = get_morph_analyzer()
+    return [analyzer.parse(token)[0].normal_form for token in tokens]
+
+
+def tokenize_with_options(
+    text: object,
+    *,
+    use_lemmas: bool = False,
+) -> list[str]:
+    tokens = tokenize(text)
+    if not use_lemmas:
+        return tokens
+    return lemmatize_tokens(tokens)

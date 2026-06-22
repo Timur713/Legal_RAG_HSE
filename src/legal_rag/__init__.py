@@ -13,6 +13,7 @@ from .data import (
 from .evaluation import recall_at_k
 from .retrieval import (
     AVAILABLE_RETRIEVERS,
+    Bm25Retriever,
     ChunkedBm25Retriever,
     ChunkedTfidfRetriever,
     create_retriever,
@@ -22,6 +23,7 @@ from .submission import create_submission, validate_submission
 
 __all__ = [
     "AVAILABLE_RETRIEVERS",
+    "Bm25Retriever",
     "ChunkedBm25Retriever",
     "ChunkedTfidfRetriever",
     "PathsConfig",

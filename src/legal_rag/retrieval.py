@@ -10,7 +10,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import linear_kernel
 
 from .baseline import TfidfRetriever, build_ranked_predictions
-from .preprocessing import normalize_text, tokenize
+from .preprocessing import normalize_text, tokenize_with_options
 
 DOCUMENT_COLUMNS = {"doc_id", "text"}
 
@@ -82,6 +82,7 @@ class ChunkedTfidfRetriever:
     top_k: int = 5
     chunk_size: int = 1600
     chunk_stride: int = 800
+    use_lemmas: bool = False
     vectorizer: TfidfVectorizer = field(init=False)
     doc_ids: list[str] = field(init=False, default_factory=list)
     chunk_matrix: object = field(init=False, default=None)
@@ -98,7 +99,7 @@ class ChunkedTfidfRetriever:
         validate_documents(documents)
         self.chunk_stride = resolve_chunk_stride(self.chunk_size, self.chunk_stride)
         self.vectorizer = TfidfVectorizer(
-            tokenizer=tokenize,
+            tokenizer=lambda text: tokenize_with_options(text, use_lemmas=self.use_lemmas),
             lowercase=False,
             token_pattern=None,
         )
@@ -150,10 +151,59 @@ class ChunkedTfidfRetriever:
 
 
 @dataclass
+class Bm25Retriever:
+    top_k: int = 5
+    use_lemmas: bool = False
+    doc_ids: list[str] = field(init=False, default_factory=list)
+    bm25: BM25Okapi | None = field(init=False, default=None)
+
+    def fit(
+        self,
+        documents: pd.DataFrame,
+        train_queries: pd.DataFrame | None = None,
+    ) -> "Bm25Retriever":
+        del train_queries
+
+        validate_documents(documents)
+        self.doc_ids = documents["doc_id"].astype(str).tolist()
+        tokenized_documents = [
+            tokenize_with_options(text, use_lemmas=self.use_lemmas)
+            for text in documents["text"].tolist()
+        ]
+        if not any(tokenized_documents):
+            raise ValueError("No non-empty tokenized documents were generated.")
+
+        self.bm25 = BM25Okapi(tokenized_documents)
+        return self
+
+    def retrieve(
+        self,
+        questions: Sequence[object],
+        top_k: int | None = None,
+    ) -> tuple[list[list[str]], list[list[float]]]:
+        if self.bm25 is None:
+            raise ValueError("Retriever is not fitted")
+
+        limit = min(top_k or self.top_k, len(self.doc_ids))
+        ranked_doc_ids: list[list[str]] = []
+        ranked_scores: list[list[float]] = []
+
+        for question in questions:
+            query_tokens = tokenize_with_options(question, use_lemmas=self.use_lemmas)
+            doc_scores = np.asarray(self.bm25.get_scores(query_tokens), dtype=float)
+            ranked_indices = np.argsort(-doc_scores)[:limit]
+            ranked_doc_ids.append([self.doc_ids[index] for index in ranked_indices])
+            ranked_scores.append([float(doc_scores[index]) for index in ranked_indices])
+
+        return ranked_doc_ids, ranked_scores
+
+
+@dataclass
 class ChunkedBm25Retriever:
     top_k: int = 5
     chunk_size: int = 1600
     chunk_stride: int = 800
+    use_lemmas: bool = False
     doc_ids: list[str] = field(init=False, default_factory=list)
     bm25: BM25Okapi | None = field(init=False, default=None)
     chunk_doc_indices: np.ndarray = field(init=False, default_factory=lambda: np.array([], dtype=np.int32))
@@ -178,7 +228,7 @@ class ChunkedBm25Retriever:
                 chunk_size=self.chunk_size,
                 chunk_stride=self.chunk_stride,
             ):
-                tokens = tokenize(chunk)
+                tokens = tokenize_with_options(chunk, use_lemmas=self.use_lemmas)
                 if not tokens:
                     continue
                 tokenized_chunks.append(tokens)
@@ -206,7 +256,7 @@ class ChunkedBm25Retriever:
         num_docs = len(self.doc_ids)
 
         for question in questions:
-            query_tokens = tokenize(question)
+            query_tokens = tokenize_with_options(question, use_lemmas=self.use_lemmas)
             chunk_scores = np.asarray(self.bm25.get_scores(query_tokens), dtype=float)
             doc_scores = np.full(num_docs, -np.inf, dtype=float)
             np.maximum.at(doc_scores, self.chunk_doc_indices, chunk_scores)
@@ -217,7 +267,7 @@ class ChunkedBm25Retriever:
         return ranked_doc_ids, ranked_scores
 
 
-AVAILABLE_RETRIEVERS = ("tfidf", "chunked_tfidf", "chunked_bm25")
+AVAILABLE_RETRIEVERS = ("tfidf", "bm25", "chunked_tfidf", "chunked_bm25")
 
 
 def create_retriever(
@@ -226,20 +276,25 @@ def create_retriever(
     top_k: int,
     chunk_size: int = 1600,
     chunk_stride: int | None = None,
+    use_lemmas: bool = False,
 ) -> RetrieverProtocol:
     if name == "tfidf":
-        return TfidfRetriever(top_k=top_k)
+        return TfidfRetriever(top_k=top_k, use_lemmas=use_lemmas)
+    if name == "bm25":
+        return Bm25Retriever(top_k=top_k, use_lemmas=use_lemmas)
     if name == "chunked_tfidf":
         return ChunkedTfidfRetriever(
             top_k=top_k,
             chunk_size=chunk_size,
             chunk_stride=resolve_chunk_stride(chunk_size, chunk_stride),
+            use_lemmas=use_lemmas,
         )
     if name == "chunked_bm25":
         return ChunkedBm25Retriever(
             top_k=top_k,
             chunk_size=chunk_size,
             chunk_stride=resolve_chunk_stride(chunk_size, chunk_stride),
+            use_lemmas=use_lemmas,
         )
     raise ValueError(f"Unknown retriever: {name}")
 
@@ -249,20 +304,23 @@ def get_retriever_params(
     *,
     chunk_size: int = 1600,
     chunk_stride: int | None = None,
-) -> dict[str, int | str]:
-    if name == "tfidf":
-        return {"name": name}
+    use_lemmas: bool = False,
+) -> dict[str, int | str | bool]:
+    if name in {"tfidf", "bm25"}:
+        return {"name": name, "use_lemmas": bool(use_lemmas)}
     if name in {"chunked_tfidf", "chunked_bm25"}:
         return {
             "name": name,
             "chunk_size": int(chunk_size),
             "chunk_stride": int(resolve_chunk_stride(chunk_size, chunk_stride)),
+            "use_lemmas": bool(use_lemmas),
         }
     raise ValueError(f"Unknown retriever: {name}")
 
 
 __all__ = [
     "AVAILABLE_RETRIEVERS",
+    "Bm25Retriever",
     "ChunkedBm25Retriever",
     "ChunkedTfidfRetriever",
     "RetrieverProtocol",
