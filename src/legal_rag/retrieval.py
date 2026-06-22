@@ -5,6 +5,7 @@ from typing import Protocol, Sequence, runtime_checkable
 
 import numpy as np
 import pandas as pd
+from rank_bm25 import BM25Okapi
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import linear_kernel
 
@@ -148,7 +149,75 @@ class ChunkedTfidfRetriever:
         return ranked_doc_ids, ranked_scores
 
 
-AVAILABLE_RETRIEVERS = ("tfidf", "chunked_tfidf")
+@dataclass
+class ChunkedBm25Retriever:
+    top_k: int = 5
+    chunk_size: int = 1600
+    chunk_stride: int = 800
+    doc_ids: list[str] = field(init=False, default_factory=list)
+    bm25: BM25Okapi | None = field(init=False, default=None)
+    chunk_doc_indices: np.ndarray = field(init=False, default_factory=lambda: np.array([], dtype=np.int32))
+    num_chunks: int = field(init=False, default=0)
+
+    def fit(
+        self,
+        documents: pd.DataFrame,
+        train_queries: pd.DataFrame | None = None,
+    ) -> "ChunkedBm25Retriever":
+        del train_queries
+
+        validate_documents(documents)
+        self.chunk_stride = resolve_chunk_stride(self.chunk_size, self.chunk_stride)
+        self.doc_ids = documents["doc_id"].astype(str).tolist()
+
+        tokenized_chunks: list[list[str]] = []
+        chunk_doc_indices: list[int] = []
+        for doc_index, text in enumerate(documents["text"].tolist()):
+            for chunk in iter_character_chunks(
+                text,
+                chunk_size=self.chunk_size,
+                chunk_stride=self.chunk_stride,
+            ):
+                tokens = tokenize(chunk)
+                if not tokens:
+                    continue
+                tokenized_chunks.append(tokens)
+                chunk_doc_indices.append(doc_index)
+
+        if not tokenized_chunks:
+            raise ValueError("No non-empty tokenized chunks were generated from the documents.")
+
+        self.bm25 = BM25Okapi(tokenized_chunks)
+        self.chunk_doc_indices = np.asarray(chunk_doc_indices, dtype=np.int32)
+        self.num_chunks = len(tokenized_chunks)
+        return self
+
+    def retrieve(
+        self,
+        questions: Sequence[object],
+        top_k: int | None = None,
+    ) -> tuple[list[list[str]], list[list[float]]]:
+        if self.bm25 is None:
+            raise ValueError("Retriever is not fitted")
+
+        limit = min(top_k or self.top_k, len(self.doc_ids))
+        ranked_doc_ids: list[list[str]] = []
+        ranked_scores: list[list[float]] = []
+        num_docs = len(self.doc_ids)
+
+        for question in questions:
+            query_tokens = tokenize(question)
+            chunk_scores = np.asarray(self.bm25.get_scores(query_tokens), dtype=float)
+            doc_scores = np.full(num_docs, -np.inf, dtype=float)
+            np.maximum.at(doc_scores, self.chunk_doc_indices, chunk_scores)
+            ranked_indices = np.argsort(-doc_scores)[:limit]
+            ranked_doc_ids.append([self.doc_ids[index] for index in ranked_indices])
+            ranked_scores.append([float(doc_scores[index]) for index in ranked_indices])
+
+        return ranked_doc_ids, ranked_scores
+
+
+AVAILABLE_RETRIEVERS = ("tfidf", "chunked_tfidf", "chunked_bm25")
 
 
 def create_retriever(
@@ -166,6 +235,12 @@ def create_retriever(
             chunk_size=chunk_size,
             chunk_stride=resolve_chunk_stride(chunk_size, chunk_stride),
         )
+    if name == "chunked_bm25":
+        return ChunkedBm25Retriever(
+            top_k=top_k,
+            chunk_size=chunk_size,
+            chunk_stride=resolve_chunk_stride(chunk_size, chunk_stride),
+        )
     raise ValueError(f"Unknown retriever: {name}")
 
 
@@ -177,7 +252,7 @@ def get_retriever_params(
 ) -> dict[str, int | str]:
     if name == "tfidf":
         return {"name": name}
-    if name == "chunked_tfidf":
+    if name in {"chunked_tfidf", "chunked_bm25"}:
         return {
             "name": name,
             "chunk_size": int(chunk_size),
@@ -188,6 +263,7 @@ def get_retriever_params(
 
 __all__ = [
     "AVAILABLE_RETRIEVERS",
+    "ChunkedBm25Retriever",
     "ChunkedTfidfRetriever",
     "RetrieverProtocol",
     "TfidfRetriever",

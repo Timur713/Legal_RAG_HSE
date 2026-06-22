@@ -11,11 +11,18 @@ from .data import (
     load_train,
 )
 from .evaluation import recall_at_k
-from .retrieval import AVAILABLE_RETRIEVERS, ChunkedTfidfRetriever, create_retriever, get_retriever_params
+from .retrieval import (
+    AVAILABLE_RETRIEVERS,
+    ChunkedBm25Retriever,
+    ChunkedTfidfRetriever,
+    create_retriever,
+    get_retriever_params,
+)
 from .submission import create_submission, validate_submission
 
 __all__ = [
     "AVAILABLE_RETRIEVERS",
+    "ChunkedBm25Retriever",
     "ChunkedTfidfRetriever",
     "PathsConfig",
     "TfidfRetriever",

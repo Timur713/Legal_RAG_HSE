@@ -76,13 +76,13 @@ def parse_args() -> argparse.Namespace:
         "--chunk-size",
         type=int,
         default=1600,
-        help="Chunk size in characters for chunked_tfidf.",
+        help="Chunk size in characters for chunked retrievers.",
     )
     parser.add_argument(
         "--chunk-stride",
         type=int,
         default=None,
-        help="Chunk stride in characters for chunked_tfidf. Defaults to chunk-size // 2.",
+        help="Chunk stride in characters for chunked retrievers. Defaults to chunk-size // 2.",
     )
     parser.add_argument(
         "--save-test-predictions",

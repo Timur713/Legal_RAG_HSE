@@ -123,6 +123,20 @@ python scripts/run_baseline_validation.py \
   --save-test-predictions
 ```
 
+Тот же passage-level подход на `BM25`:
+
+```bash
+python scripts/run_baseline_validation.py \
+  --paths configs/paths.local.yaml \
+  --experiment-name chunked_bm25_validation \
+  --retriever chunked_bm25 \
+  --chunk-size 1600 \
+  --chunk-stride 800 \
+  --top-k 5 \
+  --extra-metric-k 20 \
+  --save-test-predictions
+```
+
 Скрипт сохраняет:
 
 - `strict_cv` и `strict_holdout` предсказания в `outputs/predictions/`
