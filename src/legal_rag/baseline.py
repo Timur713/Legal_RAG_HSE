@@ -18,7 +18,13 @@ class TfidfRetriever:
     doc_ids: list[str] = field(init=False, default_factory=list)
     doc_matrix: object = field(init=False, default=None)
 
-    def fit(self, documents: pd.DataFrame) -> "TfidfRetriever":
+    def fit(
+        self,
+        documents: pd.DataFrame,
+        train_queries: pd.DataFrame | None = None,
+    ) -> "TfidfRetriever":
+        del train_queries
+
         required_columns = {"doc_id", "text"}
         missing = required_columns - set(documents.columns)
         if missing:

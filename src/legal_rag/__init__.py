@@ -11,14 +11,19 @@ from .data import (
     load_train,
 )
 from .evaluation import recall_at_k
+from .retrieval import AVAILABLE_RETRIEVERS, ChunkedTfidfRetriever, create_retriever, get_retriever_params
 from .submission import create_submission, validate_submission
 
 __all__ = [
+    "AVAILABLE_RETRIEVERS",
+    "ChunkedTfidfRetriever",
     "PathsConfig",
     "TfidfRetriever",
     "build_ranked_predictions",
+    "create_retriever",
     "create_submission",
     "ensure_output_dirs",
+    "get_retriever_params",
     "load_documents",
     "load_paths_config",
     "load_sample_submission",

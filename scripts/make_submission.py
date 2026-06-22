@@ -30,7 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--experiment-name",
         default="baseline",
-        help="Prefix used by scripts/run_baseline.py when it saved predictions.",
+        help="Prefix used by a retrieval experiment script when it saved test predictions.",
     )
     parser.add_argument(
         "--predictions-file",
@@ -61,7 +61,8 @@ def main() -> int:
 
     if not predictions_path.exists():
         raise FileNotFoundError(
-            f"Predictions file does not exist: {predictions_path}. Run scripts/run_baseline.py first or pass --predictions-file."
+            f"Predictions file does not exist: {predictions_path}. "
+            "Run a retrieval experiment with test-prediction saving enabled or pass --predictions-file."
         )
 
     predictions = pd.read_csv(predictions_path)

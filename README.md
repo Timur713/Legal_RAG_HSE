@@ -98,7 +98,38 @@ python scripts/check_data.py --paths configs/paths.local.yaml
 python scripts/run_baseline.py --paths configs/paths.local.yaml
 ```
 
-5. Создайте submission из сохраненных предсказаний:
+5. Запустите локальную strict validation через общий retrieval-runner:
+
+```bash
+python scripts/run_baseline_validation.py \
+  --paths configs/paths.local.yaml \
+  --experiment-name baseline_validation \
+  --retriever tfidf \
+  --top-k 5 \
+  --extra-metric-k 20
+```
+
+Пример следующего эксперимента из `baseline_reference.ipynb` - passage-level retrieval с overlap-chunks:
+
+```bash
+python scripts/run_baseline_validation.py \
+  --paths configs/paths.local.yaml \
+  --experiment-name chunked_tfidf_validation \
+  --retriever chunked_tfidf \
+  --chunk-size 1600 \
+  --chunk-stride 800 \
+  --top-k 5 \
+  --extra-metric-k 20 \
+  --save-test-predictions
+```
+
+Скрипт сохраняет:
+
+- `strict_cv` и `strict_holdout` предсказания в `outputs/predictions/`
+- summary-метрики в `outputs/metrics/<experiment>_metrics.json`
+- метрики по темам в `outputs/metrics/<experiment>_topic_metrics.csv`
+
+6. Создайте submission из сохраненных предсказаний:
 
 ```bash
 python scripts/make_submission.py --paths configs/paths.local.yaml
@@ -117,7 +148,7 @@ python scripts/make_submission.py --paths configs/paths.local.yaml
 Смысл такой:
 
 - `Setup` обычно выполняется один раз после старта или рестарта Colab.
-- В секции `Run experiment + view metrics` задается имя эксперимента и команда запуска. Эту секцию можно повторять для каждого нового прогона.
+- В секции `Run experiment + view metrics` задается имя эксперимента и набор CLI-флагов. Эту секцию можно повторять для каждого нового прогона.
 - В секции `Make submission if needed` при необходимости собирается сабмит для текущего `EXPERIMENT_NAME`.
 - Внизу есть опциональные utility-блоки для просмотра `outputs/` и коммита результатов в GitHub.
 
