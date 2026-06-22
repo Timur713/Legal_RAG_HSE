@@ -1,0 +1,9 @@
+{
+  "experiment_name": "baseline",
+  "metric_name": "recall@5",
+  "metric_value": 0.3385714285714286,
+  "num_documents": 468,
+  "num_train_queries": 700,
+  "num_test_queries": 350,
+  "top_k": 5
+}

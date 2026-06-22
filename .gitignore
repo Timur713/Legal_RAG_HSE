@@ -1,0 +1,27 @@
+# raw data
+data/raw/*
+!data/raw/.gitkeep
+
+# processed data can be heavy
+data/processed/*
+!data/processed/.gitkeep
+
+# caches / models / indexes
+*.faiss
+*.pkl
+*.joblib
+*.pt
+*.bin
+*.safetensors
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+
+# local env
+.env
+.venv/
+venv/
+
+# system
+.DS_Store
