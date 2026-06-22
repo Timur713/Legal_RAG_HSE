@@ -60,23 +60,25 @@ python scripts/make_submission.py --paths configs/paths.local.yaml
 
 ## Работа в Colab
 
-Откройте [notebooks/main_colab.ipynb](/Users/a1/Desktop/dev/Legal_RAG_HSE_3/notebooks/main_colab.ipynb) и выполните секции по порядку:
+Откройте [notebooks/main_colab.ipynb](/Users/a1/Desktop/dev/Legal_RAG_HSE_3/notebooks/main_colab.ipynb). Ноутбук организован не как линейный пайплайн, а как повторяемый цикл работы с экспериментами:
 
 1. Setup
-2. Mount Google Drive
-3. Clone or pull GitHub repo
-4. Install requirements
-5. Check data
-6. Run baseline
-7. Make submission
-8. Save outputs to GitHub
+2. Run experiment + view metrics
+3. Make submission if needed
+
+Смысл такой:
+
+- `Setup` обычно выполняется один раз после старта или рестарта Colab.
+- В секции `Run experiment + view metrics` задается имя эксперимента и команда запуска. Эту секцию можно повторять для каждого нового прогона.
+- В секции `Make submission if needed` при необходимости собирается сабмит для текущего `EXPERIMENT_NAME`.
+- Внизу есть опциональные utility-блоки для просмотра `outputs/` и коммита результатов в GitHub.
 
 Что важно:
 
 - `REPO_URL` в ноутбуке нужно заменить на URL вашего GitHub-репозитория.
-- `configs/paths.colab.yaml` ожидает, что данные лежат на Google Drive.
+- `configs/paths.colab.yaml` смотрит на `data/raw/` и `data/processed/` внутри клона репозитория.
 - Код и `outputs/` живут внутри клона репозитория в `/content/legal-rag-hackathon`.
-- После рестарта Colab достаточно смонтировать Drive, сделать `git pull` и перейти к нужной секции.
+- После рестарта Colab обычно достаточно заново выполнить `Setup`, а потом сразу перейти к нужному эксперименту.
 
 ## Где лежат данные и результаты
 
