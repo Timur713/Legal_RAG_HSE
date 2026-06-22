@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol, Sequence, runtime_checkable
 
@@ -13,6 +14,9 @@ from .baseline import TfidfRetriever, build_ranked_predictions
 from .preprocessing import normalize_text, tokenize_with_options
 
 DOCUMENT_COLUMNS = {"doc_id", "text"}
+PARAGRAPH_BREAK_RE = re.compile(r"\n\s*\n+", re.MULTILINE)
+SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…;:])\s+(?=[А-ЯЁA-Z0-9])")
+CHUNK_SCORE_AGGREGATIONS = ("max", "top2_sum", "mean_topk", "logsumexp")
 
 
 @runtime_checkable
@@ -53,11 +57,79 @@ def resolve_chunk_stride(chunk_size: int, chunk_stride: int | None) -> int:
     return stride
 
 
-def iter_character_chunks(
+def aggregate_chunk_scores(
+    chunk_scores: np.ndarray,
+    *,
+    mode: str,
+    top_k: int = 2,
+) -> float:
+    scores = np.asarray(chunk_scores, dtype=float).reshape(-1)
+    if scores.size == 0:
+        return float("-inf")
+    if top_k <= 0:
+        raise ValueError("chunk_score_top_k must be positive.")
+    if mode not in CHUNK_SCORE_AGGREGATIONS:
+        supported = ", ".join(CHUNK_SCORE_AGGREGATIONS)
+        raise ValueError(f"Unsupported chunk_score_aggregation={mode!r}. Supported: {supported}.")
+
+    if mode == "max":
+        return float(np.max(scores))
+
+    limit = min(int(top_k), scores.size)
+    top_scores = np.partition(scores, -limit)[-limit:]
+
+    if mode == "top2_sum":
+        top2_limit = min(2, scores.size)
+        top2_scores = np.partition(scores, -top2_limit)[-top2_limit:]
+        return float(np.sum(top2_scores))
+    if mode == "mean_topk":
+        return float(np.mean(top_scores))
+    if mode == "logsumexp":
+        maximum = float(np.max(top_scores))
+        stabilized = np.exp(top_scores - maximum)
+        return float(maximum + np.log(np.sum(stabilized)))
+
+    raise AssertionError(f"Unhandled chunk_score_aggregation mode: {mode}")
+
+
+def build_doc_chunk_offsets(
+    chunk_doc_indices: Sequence[int],
+    *,
+    num_docs: int,
+) -> np.ndarray:
+    counts = np.bincount(np.asarray(chunk_doc_indices, dtype=np.int32), minlength=num_docs)
+    offsets = np.zeros(num_docs + 1, dtype=np.int32)
+    offsets[1:] = np.cumsum(counts, dtype=np.int32)
+    return offsets
+
+
+def aggregate_scores_by_doc(
+    chunk_scores: np.ndarray,
+    *,
+    doc_chunk_offsets: np.ndarray,
+    aggregation_mode: str,
+    aggregation_top_k: int,
+) -> np.ndarray:
+    num_docs = len(doc_chunk_offsets) - 1
+    doc_scores = np.full(num_docs, -np.inf, dtype=float)
+    for doc_index in range(num_docs):
+        start = int(doc_chunk_offsets[doc_index])
+        end = int(doc_chunk_offsets[doc_index + 1])
+        if start >= end:
+            continue
+        doc_scores[doc_index] = aggregate_chunk_scores(
+            chunk_scores[start:end],
+            mode=aggregation_mode,
+            top_k=aggregation_top_k,
+        )
+    return doc_scores
+
+
+def _split_long_text_fragment(
     text: object,
     *,
     chunk_size: int,
-    chunk_stride: int,
+    chunk_overlap: int,
 ) -> list[str]:
     raw_text = str(text)
     if not raw_text:
@@ -73,8 +145,164 @@ def iter_character_chunks(
             chunks.append(chunk)
         if end == text_length:
             break
-        start += chunk_stride
+        start = max(start + 1, end - chunk_overlap)
     return chunks
+
+
+def split_text_into_paragraphs(text: object) -> list[str]:
+    raw_text = str(text).strip()
+    if not raw_text:
+        return []
+
+    paragraphs = [paragraph.strip() for paragraph in PARAGRAPH_BREAK_RE.split(raw_text)]
+    return [paragraph for paragraph in paragraphs if paragraph]
+
+
+def split_paragraph_into_sentences(paragraph: object) -> list[str]:
+    normalized = re.sub(r"\s+", " ", str(paragraph)).strip()
+    if not normalized:
+        return []
+
+    sentences = [sentence.strip() for sentence in SENTENCE_SPLIT_RE.split(normalized)]
+    return [sentence for sentence in sentences if sentence]
+
+
+def split_text_into_structural_units(
+    text: object,
+    *,
+    chunk_size: int,
+    chunk_stride: int,
+) -> list[str]:
+    overlap = max(0, chunk_size - chunk_stride)
+    paragraphs = split_text_into_paragraphs(text)
+    if not paragraphs:
+        return _split_long_text_fragment(
+            text,
+            chunk_size=chunk_size,
+            chunk_overlap=overlap,
+        )
+
+    units: list[str] = []
+    for paragraph in paragraphs:
+        paragraph_text = re.sub(r"\s+", " ", paragraph).strip()
+        if not paragraph_text:
+            continue
+        if len(paragraph_text) <= chunk_size:
+            units.append(paragraph_text)
+            continue
+
+        sentences = split_paragraph_into_sentences(paragraph_text)
+        if len(sentences) <= 1:
+            units.extend(
+                _split_long_text_fragment(
+                    paragraph_text,
+                    chunk_size=chunk_size,
+                    chunk_overlap=overlap,
+                )
+            )
+            continue
+
+        for sentence in sentences:
+            sentence_text = sentence.strip()
+            if not sentence_text:
+                continue
+            if len(sentence_text) <= chunk_size:
+                units.append(sentence_text)
+            else:
+                units.extend(
+                    _split_long_text_fragment(
+                        sentence_text,
+                        chunk_size=chunk_size,
+                        chunk_overlap=overlap,
+                    )
+                )
+    return units
+
+
+def iter_structure_aware_chunks(
+    text: object,
+    *,
+    chunk_size: int,
+    chunk_stride: int,
+) -> list[str]:
+    raw_text = str(text)
+    if not raw_text.strip():
+        return []
+
+    units = split_text_into_structural_units(
+        raw_text,
+        chunk_size=chunk_size,
+        chunk_stride=chunk_stride,
+    )
+    if not units:
+        return []
+
+    overlap_chars = max(0, chunk_size - chunk_stride)
+    chunks: list[str] = []
+    start_index = 0
+
+    while start_index < len(units):
+        chunk_units: list[str] = []
+        chunk_length = 0
+        index = start_index
+
+        while index < len(units):
+            unit = units[index]
+            added_length = len(unit) if not chunk_units else len(unit) + 1
+            if chunk_units and chunk_length + added_length > chunk_size:
+                break
+            chunk_units.append(unit)
+            chunk_length += added_length
+            index += 1
+            if chunk_length >= chunk_size:
+                break
+
+        if not chunk_units:
+            chunk_units.append(units[start_index])
+            index = start_index + 1
+
+        chunk_text = " ".join(chunk_units).strip()
+        if chunk_text:
+            chunks.append(chunk_text)
+
+        if index >= len(units):
+            break
+
+        if overlap_chars <= 0:
+            start_index = index
+            continue
+
+        carried_length = 0
+        overlap_start_index = index
+        while overlap_start_index > start_index:
+            previous_unit = units[overlap_start_index - 1]
+            added_length = len(previous_unit) if carried_length == 0 else len(previous_unit) + 1
+            if carried_length + added_length > overlap_chars and overlap_start_index < index:
+                break
+            carried_length += added_length
+            overlap_start_index -= 1
+            if carried_length >= overlap_chars:
+                break
+
+        next_start_index = overlap_start_index if overlap_start_index < index else index
+        if next_start_index <= start_index:
+            next_start_index = min(index, start_index + 1)
+        start_index = next_start_index
+
+    return chunks
+
+
+def iter_character_chunks(
+    text: object,
+    *,
+    chunk_size: int,
+    chunk_stride: int,
+) -> list[str]:
+    return iter_structure_aware_chunks(
+        text,
+        chunk_size=chunk_size,
+        chunk_stride=chunk_stride,
+    )
 
 
 @dataclass
@@ -96,7 +324,7 @@ class DocumentChunkStore:
         self.chunk_bm25_by_doc_index = []
 
         for text in documents["text"].tolist():
-            chunks = iter_character_chunks(
+            chunks = iter_structure_aware_chunks(
                 text,
                 chunk_size=self.chunk_size,
                 chunk_stride=self.chunk_stride,
@@ -151,10 +379,13 @@ class ChunkedTfidfRetriever:
     chunk_size: int = 1600
     chunk_stride: int = 800
     use_lemmas: bool = False
+    chunk_score_aggregation: str = "max"
+    chunk_score_top_k: int = 2
     vectorizer: TfidfVectorizer = field(init=False)
     doc_ids: list[str] = field(init=False, default_factory=list)
     chunk_matrix: object = field(init=False, default=None)
     chunk_doc_indices: np.ndarray = field(init=False, default_factory=lambda: np.array([], dtype=np.int32))
+    doc_chunk_offsets: np.ndarray = field(init=False, default_factory=lambda: np.array([], dtype=np.int32))
     num_chunks: int = field(init=False, default=0)
 
     def fit(
@@ -176,7 +407,7 @@ class ChunkedTfidfRetriever:
         chunk_texts: list[str] = []
         chunk_doc_indices: list[int] = []
         for doc_index, text in enumerate(documents["text"].tolist()):
-            for chunk in iter_character_chunks(
+            for chunk in iter_structure_aware_chunks(
                 text,
                 chunk_size=self.chunk_size,
                 chunk_stride=self.chunk_stride,
@@ -189,6 +420,7 @@ class ChunkedTfidfRetriever:
 
         self.chunk_matrix = self.vectorizer.fit_transform(chunk_texts)
         self.chunk_doc_indices = np.asarray(chunk_doc_indices, dtype=np.int32)
+        self.doc_chunk_offsets = build_doc_chunk_offsets(chunk_doc_indices, num_docs=len(self.doc_ids))
         self.num_chunks = len(chunk_texts)
         return self
 
@@ -207,10 +439,13 @@ class ChunkedTfidfRetriever:
 
         ranked_doc_ids: list[list[str]] = []
         ranked_scores: list[list[float]] = []
-        num_docs = len(self.doc_ids)
         for row in chunk_similarities:
-            doc_scores = np.full(num_docs, -np.inf, dtype=float)
-            np.maximum.at(doc_scores, self.chunk_doc_indices, np.asarray(row, dtype=float))
+            doc_scores = aggregate_scores_by_doc(
+                np.asarray(row, dtype=float),
+                doc_chunk_offsets=self.doc_chunk_offsets,
+                aggregation_mode=self.chunk_score_aggregation,
+                aggregation_top_k=self.chunk_score_top_k,
+            )
             ranked_indices = np.argsort(-doc_scores)[:limit]
             ranked_doc_ids.append([self.doc_ids[index] for index in ranked_indices])
             ranked_scores.append([float(doc_scores[index]) for index in ranked_indices])
@@ -272,9 +507,12 @@ class ChunkedBm25Retriever:
     chunk_size: int = 1600
     chunk_stride: int = 800
     use_lemmas: bool = False
+    chunk_score_aggregation: str = "max"
+    chunk_score_top_k: int = 2
     doc_ids: list[str] = field(init=False, default_factory=list)
     bm25: BM25Okapi | None = field(init=False, default=None)
     chunk_doc_indices: np.ndarray = field(init=False, default_factory=lambda: np.array([], dtype=np.int32))
+    doc_chunk_offsets: np.ndarray = field(init=False, default_factory=lambda: np.array([], dtype=np.int32))
     num_chunks: int = field(init=False, default=0)
 
     def fit(
@@ -291,7 +529,7 @@ class ChunkedBm25Retriever:
         tokenized_chunks: list[list[str]] = []
         chunk_doc_indices: list[int] = []
         for doc_index, text in enumerate(documents["text"].tolist()):
-            for chunk in iter_character_chunks(
+            for chunk in iter_structure_aware_chunks(
                 text,
                 chunk_size=self.chunk_size,
                 chunk_stride=self.chunk_stride,
@@ -307,6 +545,7 @@ class ChunkedBm25Retriever:
 
         self.bm25 = BM25Okapi(tokenized_chunks)
         self.chunk_doc_indices = np.asarray(chunk_doc_indices, dtype=np.int32)
+        self.doc_chunk_offsets = build_doc_chunk_offsets(chunk_doc_indices, num_docs=len(self.doc_ids))
         self.num_chunks = len(tokenized_chunks)
         return self
 
@@ -321,13 +560,16 @@ class ChunkedBm25Retriever:
         limit = min(top_k or self.top_k, len(self.doc_ids))
         ranked_doc_ids: list[list[str]] = []
         ranked_scores: list[list[float]] = []
-        num_docs = len(self.doc_ids)
 
         for question in questions:
             query_tokens = tokenize_with_options(question, use_lemmas=self.use_lemmas)
             chunk_scores = np.asarray(self.bm25.get_scores(query_tokens), dtype=float)
-            doc_scores = np.full(num_docs, -np.inf, dtype=float)
-            np.maximum.at(doc_scores, self.chunk_doc_indices, chunk_scores)
+            doc_scores = aggregate_scores_by_doc(
+                chunk_scores,
+                doc_chunk_offsets=self.doc_chunk_offsets,
+                aggregation_mode=self.chunk_score_aggregation,
+                aggregation_top_k=self.chunk_score_top_k,
+            )
             ranked_indices = np.argsort(-doc_scores)[:limit]
             ranked_doc_ids.append([self.doc_ids[index] for index in ranked_indices])
             ranked_scores.append([float(doc_scores[index]) for index in ranked_indices])
@@ -342,6 +584,8 @@ class ReciprocalRankFusionRetriever:
     chunk_size: int = 1600
     chunk_stride: int = 800
     use_lemmas: bool = False
+    chunk_score_aggregation: str = "max"
+    chunk_score_top_k: int = 2
     rrf_k: int = 60
     retrievers: list[RetrieverProtocol] = field(init=False, default_factory=list)
 
@@ -363,6 +607,8 @@ class ReciprocalRankFusionRetriever:
                 chunk_size=self.chunk_size,
                 chunk_stride=self.chunk_stride,
                 use_lemmas=self.use_lemmas,
+                chunk_score_aggregation=self.chunk_score_aggregation,
+                chunk_score_top_k=self.chunk_score_top_k,
             )
             retriever.fit(documents, train_queries=train_queries)
             self.retrievers.append(retriever)
@@ -402,6 +648,8 @@ class CrossEncoderRerankerRetriever:
     chunk_size: int = 1600
     chunk_stride: int = 800
     use_lemmas: bool = False
+    chunk_score_aggregation: str = "max"
+    chunk_score_top_k: int = 2
     reranker_model_name: str = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
     reranker_batch_size: int = 16
     reranker_max_length: int = 512
@@ -443,6 +691,8 @@ class CrossEncoderRerankerRetriever:
             chunk_size=self.chunk_size,
             chunk_stride=self.chunk_stride,
             use_lemmas=self.use_lemmas,
+            chunk_score_aggregation=self.chunk_score_aggregation,
+            chunk_score_top_k=self.chunk_score_top_k,
             hybrid_retrievers=self.first_stage_hybrid_retrievers,
             rrf_k=self.first_stage_rrf_k,
         )
@@ -595,6 +845,8 @@ def create_retriever(
     chunk_size: int = 1600,
     chunk_stride: int | None = None,
     use_lemmas: bool = False,
+    chunk_score_aggregation: str = "max",
+    chunk_score_top_k: int = 2,
     hybrid_retrievers: Sequence[str] | None = None,
     rrf_k: int = 60,
     rerank_top_k: int = 20,
@@ -621,6 +873,8 @@ def create_retriever(
             chunk_size=chunk_size,
             chunk_stride=resolve_chunk_stride(chunk_size, chunk_stride),
             use_lemmas=use_lemmas,
+            chunk_score_aggregation=str(chunk_score_aggregation),
+            chunk_score_top_k=int(chunk_score_top_k),
         )
     if name == "chunked_bm25":
         return ChunkedBm25Retriever(
@@ -628,6 +882,8 @@ def create_retriever(
             chunk_size=chunk_size,
             chunk_stride=resolve_chunk_stride(chunk_size, chunk_stride),
             use_lemmas=use_lemmas,
+            chunk_score_aggregation=str(chunk_score_aggregation),
+            chunk_score_top_k=int(chunk_score_top_k),
         )
     if name == "hybrid_rrf":
         component_names = tuple(str(component) for component in (hybrid_retrievers or ()))
@@ -637,6 +893,8 @@ def create_retriever(
             chunk_size=chunk_size,
             chunk_stride=resolve_chunk_stride(chunk_size, chunk_stride),
             use_lemmas=use_lemmas,
+            chunk_score_aggregation=str(chunk_score_aggregation),
+            chunk_score_top_k=int(chunk_score_top_k),
             rrf_k=rrf_k,
         )
     if name == "cross_encoder_rerank":
@@ -647,6 +905,8 @@ def create_retriever(
             chunk_size=chunk_size,
             chunk_stride=resolve_chunk_stride(chunk_size, chunk_stride),
             use_lemmas=use_lemmas,
+            chunk_score_aggregation=str(chunk_score_aggregation),
+            chunk_score_top_k=int(chunk_score_top_k),
             reranker_model_name=reranker_model_name,
             reranker_batch_size=reranker_batch_size,
             reranker_max_length=reranker_max_length,
@@ -668,6 +928,8 @@ def get_retriever_params(
     chunk_size: int = 1600,
     chunk_stride: int | None = None,
     use_lemmas: bool = False,
+    chunk_score_aggregation: str = "max",
+    chunk_score_top_k: int = 2,
     hybrid_retrievers: Sequence[str] | None = None,
     rrf_k: int = 60,
     rerank_top_k: int = 20,
@@ -692,6 +954,8 @@ def get_retriever_params(
             "chunk_size": int(chunk_size),
             "chunk_stride": int(resolve_chunk_stride(chunk_size, chunk_stride)),
             "use_lemmas": bool(use_lemmas),
+            "chunk_score_aggregation": str(chunk_score_aggregation),
+            "chunk_score_top_k": int(chunk_score_top_k),
         }
     if name == "hybrid_rrf":
         return {
@@ -699,6 +963,8 @@ def get_retriever_params(
             "chunk_size": int(chunk_size),
             "chunk_stride": int(resolve_chunk_stride(chunk_size, chunk_stride)),
             "use_lemmas": bool(use_lemmas),
+            "chunk_score_aggregation": str(chunk_score_aggregation),
+            "chunk_score_top_k": int(chunk_score_top_k),
             "hybrid_retrievers": [str(component) for component in (hybrid_retrievers or ())],
             "rrf_k": int(rrf_k),
         }
@@ -708,6 +974,8 @@ def get_retriever_params(
             "chunk_size": int(chunk_size),
             "chunk_stride": int(resolve_chunk_stride(chunk_size, chunk_stride)),
             "use_lemmas": bool(use_lemmas),
+            "chunk_score_aggregation": str(chunk_score_aggregation),
+            "chunk_score_top_k": int(chunk_score_top_k),
             "rerank_top_k": int(rerank_top_k),
             "reranker_model_name": str(reranker_model_name),
             "reranker_batch_size": int(reranker_batch_size),
@@ -732,6 +1000,7 @@ __all__ = [
     "Bm25Retriever",
     "ChunkedBm25Retriever",
     "ChunkedTfidfRetriever",
+    "CHUNK_SCORE_AGGREGATIONS",
     "CrossEncoderRerankerRetriever",
     "DocumentChunkStore",
     "ReciprocalRankFusionRetriever",
@@ -740,7 +1009,10 @@ __all__ = [
     "build_ranked_predictions",
     "create_retriever",
     "get_retriever_params",
+    "iter_structure_aware_chunks",
     "iter_character_chunks",
     "resolve_chunk_stride",
+    "split_paragraph_into_sentences",
+    "split_text_into_paragraphs",
     "validate_documents",
 ]

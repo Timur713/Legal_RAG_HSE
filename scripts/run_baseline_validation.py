@@ -22,6 +22,7 @@ from legal_rag.data import (  # noqa: E402
 from legal_rag.evaluation import recall_at_k  # noqa: E402
 from legal_rag.retrieval import (  # noqa: E402
     AVAILABLE_RETRIEVERS,
+    CHUNK_SCORE_AGGREGATIONS,
     build_ranked_predictions,
     create_retriever,
     get_retriever_params,
@@ -76,18 +77,30 @@ def parse_args() -> argparse.Namespace:
         "--chunk-size",
         type=int,
         default=1600,
-        help="Chunk size in characters for chunked retrievers.",
+        help="Target chunk size in characters for structure-aware chunked retrievers.",
     )
     parser.add_argument(
         "--chunk-stride",
         type=int,
         default=None,
-        help="Chunk stride in characters for chunked retrievers. Defaults to chunk-size // 2.",
+        help="Chunk step in characters for structure-aware chunked retrievers. Overlap is chunk-size - chunk-stride.",
     )
     parser.add_argument(
         "--use-lemmas",
         action="store_true",
         help="Apply Russian lemmatization with pymorphy3 during tokenization.",
+    )
+    parser.add_argument(
+        "--chunk-score-aggregation",
+        default="max",
+        choices=CHUNK_SCORE_AGGREGATIONS,
+        help="How to aggregate chunk scores back to a document score for chunked retrievers.",
+    )
+    parser.add_argument(
+        "--chunk-score-top-k",
+        type=int,
+        default=2,
+        help="How many top chunks to use for top-k-based chunk score aggregation modes.",
     )
     parser.add_argument(
         "--hybrid-retrievers",
@@ -246,6 +259,11 @@ def validate_hybrid_args(args: argparse.Namespace) -> None:
         raise ValueError("rrf_k must be positive.")
 
 
+def validate_chunk_aggregation_args(args: argparse.Namespace) -> None:
+    if args.chunk_score_top_k <= 0:
+        raise ValueError("chunk_score_top_k must be positive.")
+
+
 def validate_reranker_args(args: argparse.Namespace) -> None:
     if args.retriever != "cross_encoder_rerank":
         return
@@ -374,6 +392,7 @@ def main() -> int:
     metric_ks = get_metric_ks(args)
     retrieve_k = get_retrieve_k(args, metric_ks)
     validate_hybrid_args(args)
+    validate_chunk_aggregation_args(args)
     validate_reranker_args(args)
     validate_runtime_args(args, retrieve_k)
 
@@ -402,6 +421,8 @@ def main() -> int:
         chunk_size=args.chunk_size,
         chunk_stride=args.chunk_stride,
         use_lemmas=args.use_lemmas,
+        chunk_score_aggregation=args.chunk_score_aggregation,
+        chunk_score_top_k=args.chunk_score_top_k,
         hybrid_retrievers=args.hybrid_retrievers,
         rrf_k=args.rrf_k,
         rerank_top_k=args.rerank_top_k,
