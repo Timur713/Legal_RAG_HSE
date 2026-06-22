@@ -224,6 +224,7 @@ python scripts/run_baseline_validation.py \
   --reranker-model-name cross-encoder/mmarco-mMiniLMv2-L12-H384-v1 \
   --reranker-batch-size 16 \
   --reranker-max-length 512 \
+  --reranker-device cuda \
   --save-test-predictions
 ```
 

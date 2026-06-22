@@ -130,6 +130,36 @@ def parse_args() -> argparse.Namespace:
         help="Optional device override for cross-encoder, for example cuda or cpu.",
     )
     parser.add_argument(
+        "--reranker-chunks-per-doc",
+        type=int,
+        default=1,
+        help="How many top chunks per document to score with the cross-encoder.",
+    )
+    parser.add_argument(
+        "--reranker-combine-mode",
+        default="ce_only",
+        choices=("ce_only", "rrf", "linear"),
+        help="How to combine cross-encoder scores with first-stage scores.",
+    )
+    parser.add_argument(
+        "--reranker-ce-weight",
+        type=float,
+        default=0.7,
+        help="Cross-encoder weight for reranker score blending.",
+    )
+    parser.add_argument(
+        "--reranker-sparse-weight",
+        type=float,
+        default=0.3,
+        help="First-stage sparse weight for reranker score blending.",
+    )
+    parser.add_argument(
+        "--reranker-rrf-k",
+        type=int,
+        default=60,
+        help="RRF constant used when --reranker-combine-mode rrf.",
+    )
+    parser.add_argument(
         "--first-stage-retriever",
         default="hybrid_rrf",
         help="First-stage retriever used by cross_encoder_rerank.",
@@ -226,6 +256,14 @@ def validate_reranker_args(args: argparse.Namespace) -> None:
         raise ValueError("reranker_batch_size must be positive.")
     if args.reranker_max_length <= 0:
         raise ValueError("reranker_max_length must be positive.")
+    if args.reranker_chunks_per_doc <= 0:
+        raise ValueError("reranker_chunks_per_doc must be positive.")
+    if args.reranker_ce_weight < 0 or args.reranker_sparse_weight < 0:
+        raise ValueError("reranker_ce_weight and reranker_sparse_weight must be non-negative.")
+    if args.reranker_ce_weight == 0 and args.reranker_sparse_weight == 0:
+        raise ValueError("At least one reranker weight must be positive.")
+    if args.reranker_rrf_k <= 0:
+        raise ValueError("reranker_rrf_k must be positive.")
     if args.first_stage_retriever == "cross_encoder_rerank":
         raise ValueError("cross_encoder_rerank cannot use cross_encoder_rerank as its first stage.")
     if args.first_stage_retriever == "hybrid_rrf":
@@ -371,6 +409,11 @@ def main() -> int:
         reranker_batch_size=args.reranker_batch_size,
         reranker_max_length=args.reranker_max_length,
         reranker_device=args.reranker_device,
+        reranker_chunks_per_doc=args.reranker_chunks_per_doc,
+        reranker_combine_mode=args.reranker_combine_mode,
+        reranker_ce_weight=args.reranker_ce_weight,
+        reranker_sparse_weight=args.reranker_sparse_weight,
+        reranker_rrf_k=args.reranker_rrf_k,
         first_stage_retriever=args.first_stage_retriever,
         first_stage_hybrid_retrievers=args.first_stage_hybrid_retrievers,
         first_stage_rrf_k=args.first_stage_rrf_k,

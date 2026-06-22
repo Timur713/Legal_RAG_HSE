@@ -118,20 +118,31 @@ class DocumentChunkStore:
             self.chunk_bm25_by_doc_index.append(bm25)
         return self
 
-    def best_chunk(self, doc_id: str, question: object) -> str:
+    def top_chunks(
+        self,
+        doc_id: str,
+        question: object,
+        *,
+        limit: int = 1,
+    ) -> list[str]:
         doc_index = self.doc_id_to_index[str(doc_id)]
         chunks = self.chunks_by_doc_index[doc_index]
         bm25 = self.chunk_bm25_by_doc_index[doc_index]
-        if len(chunks) == 1 or bm25 is None:
-            return chunks[0]
+        if limit <= 0:
+            raise ValueError("limit must be positive.")
+        if len(chunks) <= limit or bm25 is None:
+            return chunks[:limit]
 
         query_tokens = tokenize_with_options(question, use_lemmas=self.use_lemmas)
         if not query_tokens:
-            return chunks[0]
+            return chunks[:limit]
 
         scores = bm25.get_scores(query_tokens)
-        best_chunk_index = int(np.argmax(scores))
-        return chunks[best_chunk_index]
+        ranked_indices = np.argsort(-np.asarray(scores, dtype=float))[:limit]
+        return [chunks[int(index)] for index in ranked_indices]
+
+    def best_chunk(self, doc_id: str, question: object) -> str:
+        return self.top_chunks(doc_id, question, limit=1)[0]
 
 
 @dataclass
@@ -395,6 +406,11 @@ class CrossEncoderRerankerRetriever:
     reranker_batch_size: int = 16
     reranker_max_length: int = 512
     reranker_device: str | None = None
+    reranker_chunks_per_doc: int = 1
+    reranker_combine_mode: str = "ce_only"
+    reranker_ce_weight: float = 0.7
+    reranker_sparse_weight: float = 0.3
+    reranker_rrf_k: int = 60
     first_stage_hybrid_retrievers: tuple[str, ...] = ()
     first_stage_rrf_k: int = 60
     first_stage_retriever: RetrieverProtocol = field(init=False)
@@ -410,6 +426,16 @@ class CrossEncoderRerankerRetriever:
             raise ValueError("rerank_top_k must be positive.")
         if self.reranker_batch_size <= 0:
             raise ValueError("reranker_batch_size must be positive.")
+        if self.reranker_chunks_per_doc <= 0:
+            raise ValueError("reranker_chunks_per_doc must be positive.")
+        if self.reranker_combine_mode not in {"ce_only", "rrf", "linear"}:
+            raise ValueError("reranker_combine_mode must be one of: ce_only, rrf, linear.")
+        if self.reranker_ce_weight < 0 or self.reranker_sparse_weight < 0:
+            raise ValueError("reranker_ce_weight and reranker_sparse_weight must be non-negative.")
+        if self.reranker_ce_weight == 0 and self.reranker_sparse_weight == 0:
+            raise ValueError("At least one reranker weight must be positive.")
+        if self.reranker_rrf_k <= 0:
+            raise ValueError("reranker_rrf_k must be positive.")
 
         self.first_stage_retriever = create_retriever(
             self.first_stage_name,
@@ -431,13 +457,55 @@ class CrossEncoderRerankerRetriever:
         from sentence_transformers import CrossEncoder
 
         encoder_kwargs: dict[str, Any] = {
-            "model_name": self.reranker_model_name,
+            "model_name_or_path": self.reranker_model_name,
             "max_length": self.reranker_max_length,
         }
         if self.reranker_device is not None:
             encoder_kwargs["device"] = self.reranker_device
         self.cross_encoder = CrossEncoder(**encoder_kwargs)
         return self
+
+    @staticmethod
+    def _minmax_normalize(scores: np.ndarray) -> np.ndarray:
+        if scores.size == 0:
+            return scores
+        minimum = float(np.min(scores))
+        maximum = float(np.max(scores))
+        if maximum <= minimum:
+            return np.ones_like(scores, dtype=float)
+        return (scores - minimum) / (maximum - minimum)
+
+    def _combine_scores(
+        self,
+        doc_ids: list[str],
+        ce_scores: np.ndarray,
+        sparse_scores: np.ndarray,
+    ) -> np.ndarray:
+        if self.reranker_combine_mode == "ce_only":
+            return ce_scores
+
+        if self.reranker_combine_mode == "linear":
+            normalized_ce = self._minmax_normalize(ce_scores)
+            normalized_sparse = self._minmax_normalize(sparse_scores)
+            return (
+                self.reranker_ce_weight * normalized_ce
+                + self.reranker_sparse_weight * normalized_sparse
+            )
+
+        combined = np.zeros(len(doc_ids), dtype=float)
+        ce_ranking = sorted(
+            range(len(doc_ids)),
+            key=lambda index: (-float(ce_scores[index]), doc_ids[index]),
+        )
+        sparse_ranking = sorted(
+            range(len(doc_ids)),
+            key=lambda index: (-float(sparse_scores[index]), doc_ids[index]),
+        )
+        for rank, index in enumerate(ce_ranking, start=1):
+            combined[index] += self.reranker_ce_weight / (self.reranker_rrf_k + rank)
+        for rank, index in enumerate(sparse_ranking, start=1):
+            combined[index] += self.reranker_sparse_weight / (self.reranker_rrf_k + rank)
+        return combined
 
     def retrieve(
         self,
@@ -448,15 +516,27 @@ class CrossEncoderRerankerRetriever:
             raise ValueError("Retriever is not fitted")
 
         limit = min(top_k or self.top_k, self.rerank_top_k)
-        first_stage_doc_ids, _ = self.first_stage_retriever.retrieve(questions, top_k=self.rerank_top_k)
+        first_stage_doc_ids, first_stage_scores = self.first_stage_retriever.retrieve(
+            questions,
+            top_k=self.rerank_top_k,
+        )
 
         pairs: list[tuple[str, str]] = []
         candidate_counts: list[int] = []
+        chunk_counts_per_doc: list[list[int]] = []
         for question, doc_ids in zip(questions, first_stage_doc_ids):
             candidate_counts.append(len(doc_ids))
+            query_chunk_counts: list[int] = []
             for doc_id in doc_ids:
-                best_chunk = self.chunk_store.best_chunk(str(doc_id), question)
-                pairs.append((str(question), best_chunk))
+                top_chunks = self.chunk_store.top_chunks(
+                    str(doc_id),
+                    question,
+                    limit=self.reranker_chunks_per_doc,
+                )
+                query_chunk_counts.append(len(top_chunks))
+                for chunk_text in top_chunks:
+                    pairs.append((str(question), chunk_text))
+            chunk_counts_per_doc.append(query_chunk_counts)
 
         if not pairs:
             return [[] for _ in questions], [[] for _ in questions]
@@ -472,11 +552,24 @@ class CrossEncoderRerankerRetriever:
         ranked_doc_ids: list[list[str]] = []
         ranked_scores: list[list[float]] = []
         offset = 0
-        for doc_ids, count in zip(first_stage_doc_ids, candidate_counts):
-            doc_scores = scores[offset : offset + count]
-            offset += count
+        for doc_ids, sparse_scores, chunk_counts in zip(
+            first_stage_doc_ids,
+            first_stage_scores,
+            chunk_counts_per_doc,
+            strict=True,
+        ):
+            ce_doc_scores: list[float] = []
+            for chunk_count in chunk_counts:
+                doc_chunk_scores = scores[offset : offset + chunk_count]
+                offset += chunk_count
+                ce_doc_scores.append(float(np.max(doc_chunk_scores)))
+            final_scores = self._combine_scores(
+                list(doc_ids),
+                np.asarray(ce_doc_scores, dtype=float),
+                np.asarray(sparse_scores, dtype=float),
+            )
             ranked = sorted(
-                zip(doc_ids, doc_scores, strict=True),
+                zip(doc_ids, final_scores, strict=True),
                 key=lambda item: (-float(item[1]), item[0]),
             )[:limit]
             ranked_doc_ids.append([str(doc_id) for doc_id, _ in ranked])
@@ -509,6 +602,11 @@ def create_retriever(
     reranker_batch_size: int = 16,
     reranker_max_length: int = 512,
     reranker_device: str | None = None,
+    reranker_chunks_per_doc: int = 1,
+    reranker_combine_mode: str = "ce_only",
+    reranker_ce_weight: float = 0.7,
+    reranker_sparse_weight: float = 0.3,
+    reranker_rrf_k: int = 60,
     first_stage_retriever: str = "hybrid_rrf",
     first_stage_hybrid_retrievers: Sequence[str] | None = None,
     first_stage_rrf_k: int = 60,
@@ -553,6 +651,11 @@ def create_retriever(
             reranker_batch_size=reranker_batch_size,
             reranker_max_length=reranker_max_length,
             reranker_device=reranker_device,
+            reranker_chunks_per_doc=reranker_chunks_per_doc,
+            reranker_combine_mode=reranker_combine_mode,
+            reranker_ce_weight=reranker_ce_weight,
+            reranker_sparse_weight=reranker_sparse_weight,
+            reranker_rrf_k=reranker_rrf_k,
             first_stage_hybrid_retrievers=tuple(str(component) for component in (first_stage_hybrid_retrievers or ())),
             first_stage_rrf_k=first_stage_rrf_k,
         )
@@ -572,6 +675,11 @@ def get_retriever_params(
     reranker_batch_size: int = 16,
     reranker_max_length: int = 512,
     reranker_device: str | None = None,
+    reranker_chunks_per_doc: int = 1,
+    reranker_combine_mode: str = "ce_only",
+    reranker_ce_weight: float = 0.7,
+    reranker_sparse_weight: float = 0.3,
+    reranker_rrf_k: int = 60,
     first_stage_retriever: str = "hybrid_rrf",
     first_stage_hybrid_retrievers: Sequence[str] | None = None,
     first_stage_rrf_k: int = 60,
@@ -605,6 +713,11 @@ def get_retriever_params(
             "reranker_batch_size": int(reranker_batch_size),
             "reranker_max_length": int(reranker_max_length),
             "reranker_device": reranker_device,
+            "reranker_chunks_per_doc": int(reranker_chunks_per_doc),
+            "reranker_combine_mode": str(reranker_combine_mode),
+            "reranker_ce_weight": float(reranker_ce_weight),
+            "reranker_sparse_weight": float(reranker_sparse_weight),
+            "reranker_rrf_k": int(reranker_rrf_k),
             "first_stage_retriever": str(first_stage_retriever),
             "first_stage_hybrid_retrievers": [
                 str(component) for component in (first_stage_hybrid_retrievers or ())
