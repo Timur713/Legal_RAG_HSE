@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol, Sequence, runtime_checkable
+from typing import Any, Protocol, Sequence, runtime_checkable
 
 import numpy as np
 import pandas as pd
@@ -75,6 +75,63 @@ def iter_character_chunks(
             break
         start += chunk_stride
     return chunks
+
+
+@dataclass
+class DocumentChunkStore:
+    chunk_size: int = 1600
+    chunk_stride: int = 800
+    use_lemmas: bool = False
+    doc_ids: list[str] = field(init=False, default_factory=list)
+    doc_id_to_index: dict[str, int] = field(init=False, default_factory=dict)
+    chunks_by_doc_index: list[list[str]] = field(init=False, default_factory=list)
+    chunk_bm25_by_doc_index: list[BM25Okapi | None] = field(init=False, default_factory=list)
+
+    def fit(self, documents: pd.DataFrame) -> "DocumentChunkStore":
+        validate_documents(documents)
+        self.chunk_stride = resolve_chunk_stride(self.chunk_size, self.chunk_stride)
+        self.doc_ids = documents["doc_id"].astype(str).tolist()
+        self.doc_id_to_index = {doc_id: index for index, doc_id in enumerate(self.doc_ids)}
+        self.chunks_by_doc_index = []
+        self.chunk_bm25_by_doc_index = []
+
+        for text in documents["text"].tolist():
+            chunks = iter_character_chunks(
+                text,
+                chunk_size=self.chunk_size,
+                chunk_stride=self.chunk_stride,
+            )
+            if not chunks:
+                chunks = [str(text)]
+            tokenized_chunks = [
+                tokenize_with_options(chunk, use_lemmas=self.use_lemmas)
+                for chunk in chunks
+            ]
+            if any(tokenized_chunks):
+                bm25 = BM25Okapi([
+                    tokens if tokens else ["__empty__"]
+                    for tokens in tokenized_chunks
+                ])
+            else:
+                bm25 = None
+            self.chunks_by_doc_index.append(chunks)
+            self.chunk_bm25_by_doc_index.append(bm25)
+        return self
+
+    def best_chunk(self, doc_id: str, question: object) -> str:
+        doc_index = self.doc_id_to_index[str(doc_id)]
+        chunks = self.chunks_by_doc_index[doc_index]
+        bm25 = self.chunk_bm25_by_doc_index[doc_index]
+        if len(chunks) == 1 or bm25 is None:
+            return chunks[0]
+
+        query_tokens = tokenize_with_options(question, use_lemmas=self.use_lemmas)
+        if not query_tokens:
+            return chunks[0]
+
+        scores = bm25.get_scores(query_tokens)
+        best_chunk_index = int(np.argmax(scores))
+        return chunks[best_chunk_index]
 
 
 @dataclass
@@ -326,7 +383,116 @@ class ReciprocalRankFusionRetriever:
         return fused_doc_ids, fused_scores
 
 
-AVAILABLE_RETRIEVERS = ("tfidf", "bm25", "chunked_tfidf", "chunked_bm25", "hybrid_rrf")
+@dataclass
+class CrossEncoderRerankerRetriever:
+    first_stage_name: str
+    top_k: int = 5
+    rerank_top_k: int = 20
+    chunk_size: int = 1600
+    chunk_stride: int = 800
+    use_lemmas: bool = False
+    reranker_model_name: str = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
+    reranker_batch_size: int = 16
+    reranker_max_length: int = 512
+    reranker_device: str | None = None
+    first_stage_hybrid_retrievers: tuple[str, ...] = ()
+    first_stage_rrf_k: int = 60
+    first_stage_retriever: RetrieverProtocol = field(init=False)
+    chunk_store: DocumentChunkStore = field(init=False)
+    cross_encoder: Any = field(init=False, default=None)
+
+    def fit(
+        self,
+        documents: pd.DataFrame,
+        train_queries: pd.DataFrame | None = None,
+    ) -> "CrossEncoderRerankerRetriever":
+        if self.rerank_top_k <= 0:
+            raise ValueError("rerank_top_k must be positive.")
+        if self.reranker_batch_size <= 0:
+            raise ValueError("reranker_batch_size must be positive.")
+
+        self.first_stage_retriever = create_retriever(
+            self.first_stage_name,
+            top_k=self.rerank_top_k,
+            chunk_size=self.chunk_size,
+            chunk_stride=self.chunk_stride,
+            use_lemmas=self.use_lemmas,
+            hybrid_retrievers=self.first_stage_hybrid_retrievers,
+            rrf_k=self.first_stage_rrf_k,
+        )
+        self.first_stage_retriever.fit(documents, train_queries=train_queries)
+
+        self.chunk_store = DocumentChunkStore(
+            chunk_size=self.chunk_size,
+            chunk_stride=self.chunk_stride,
+            use_lemmas=self.use_lemmas,
+        ).fit(documents)
+
+        from sentence_transformers import CrossEncoder
+
+        encoder_kwargs: dict[str, Any] = {
+            "model_name": self.reranker_model_name,
+            "max_length": self.reranker_max_length,
+        }
+        if self.reranker_device is not None:
+            encoder_kwargs["device"] = self.reranker_device
+        self.cross_encoder = CrossEncoder(**encoder_kwargs)
+        return self
+
+    def retrieve(
+        self,
+        questions: Sequence[object],
+        top_k: int | None = None,
+    ) -> tuple[list[list[str]], list[list[float]]]:
+        if self.cross_encoder is None:
+            raise ValueError("Retriever is not fitted")
+
+        limit = min(top_k or self.top_k, self.rerank_top_k)
+        first_stage_doc_ids, _ = self.first_stage_retriever.retrieve(questions, top_k=self.rerank_top_k)
+
+        pairs: list[tuple[str, str]] = []
+        candidate_counts: list[int] = []
+        for question, doc_ids in zip(questions, first_stage_doc_ids):
+            candidate_counts.append(len(doc_ids))
+            for doc_id in doc_ids:
+                best_chunk = self.chunk_store.best_chunk(str(doc_id), question)
+                pairs.append((str(question), best_chunk))
+
+        if not pairs:
+            return [[] for _ in questions], [[] for _ in questions]
+
+        raw_scores = self.cross_encoder.predict(
+            pairs,
+            batch_size=self.reranker_batch_size,
+            show_progress_bar=False,
+            convert_to_numpy=True,
+        )
+        scores = np.asarray(raw_scores, dtype=float).reshape(-1)
+
+        ranked_doc_ids: list[list[str]] = []
+        ranked_scores: list[list[float]] = []
+        offset = 0
+        for doc_ids, count in zip(first_stage_doc_ids, candidate_counts):
+            doc_scores = scores[offset : offset + count]
+            offset += count
+            ranked = sorted(
+                zip(doc_ids, doc_scores, strict=True),
+                key=lambda item: (-float(item[1]), item[0]),
+            )[:limit]
+            ranked_doc_ids.append([str(doc_id) for doc_id, _ in ranked])
+            ranked_scores.append([float(score) for _, score in ranked])
+
+        return ranked_doc_ids, ranked_scores
+
+
+AVAILABLE_RETRIEVERS = (
+    "tfidf",
+    "bm25",
+    "chunked_tfidf",
+    "chunked_bm25",
+    "hybrid_rrf",
+    "cross_encoder_rerank",
+)
 
 
 def create_retriever(
@@ -338,6 +504,14 @@ def create_retriever(
     use_lemmas: bool = False,
     hybrid_retrievers: Sequence[str] | None = None,
     rrf_k: int = 60,
+    rerank_top_k: int = 20,
+    reranker_model_name: str = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+    reranker_batch_size: int = 16,
+    reranker_max_length: int = 512,
+    reranker_device: str | None = None,
+    first_stage_retriever: str = "hybrid_rrf",
+    first_stage_hybrid_retrievers: Sequence[str] | None = None,
+    first_stage_rrf_k: int = 60,
 ) -> RetrieverProtocol:
     if name == "tfidf":
         return TfidfRetriever(top_k=top_k, use_lemmas=use_lemmas)
@@ -367,6 +541,21 @@ def create_retriever(
             use_lemmas=use_lemmas,
             rrf_k=rrf_k,
         )
+    if name == "cross_encoder_rerank":
+        return CrossEncoderRerankerRetriever(
+            first_stage_name=first_stage_retriever,
+            top_k=top_k,
+            rerank_top_k=rerank_top_k,
+            chunk_size=chunk_size,
+            chunk_stride=resolve_chunk_stride(chunk_size, chunk_stride),
+            use_lemmas=use_lemmas,
+            reranker_model_name=reranker_model_name,
+            reranker_batch_size=reranker_batch_size,
+            reranker_max_length=reranker_max_length,
+            reranker_device=reranker_device,
+            first_stage_hybrid_retrievers=tuple(str(component) for component in (first_stage_hybrid_retrievers or ())),
+            first_stage_rrf_k=first_stage_rrf_k,
+        )
     raise ValueError(f"Unknown retriever: {name}")
 
 
@@ -378,7 +567,15 @@ def get_retriever_params(
     use_lemmas: bool = False,
     hybrid_retrievers: Sequence[str] | None = None,
     rrf_k: int = 60,
-) -> dict[str, int | str | bool]:
+    rerank_top_k: int = 20,
+    reranker_model_name: str = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+    reranker_batch_size: int = 16,
+    reranker_max_length: int = 512,
+    reranker_device: str | None = None,
+    first_stage_retriever: str = "hybrid_rrf",
+    first_stage_hybrid_retrievers: Sequence[str] | None = None,
+    first_stage_rrf_k: int = 60,
+) -> dict[str, Any]:
     if name in {"tfidf", "bm25"}:
         return {"name": name, "use_lemmas": bool(use_lemmas)}
     if name in {"chunked_tfidf", "chunked_bm25"}:
@@ -397,6 +594,23 @@ def get_retriever_params(
             "hybrid_retrievers": [str(component) for component in (hybrid_retrievers or ())],
             "rrf_k": int(rrf_k),
         }
+    if name == "cross_encoder_rerank":
+        return {
+            "name": name,
+            "chunk_size": int(chunk_size),
+            "chunk_stride": int(resolve_chunk_stride(chunk_size, chunk_stride)),
+            "use_lemmas": bool(use_lemmas),
+            "rerank_top_k": int(rerank_top_k),
+            "reranker_model_name": str(reranker_model_name),
+            "reranker_batch_size": int(reranker_batch_size),
+            "reranker_max_length": int(reranker_max_length),
+            "reranker_device": reranker_device,
+            "first_stage_retriever": str(first_stage_retriever),
+            "first_stage_hybrid_retrievers": [
+                str(component) for component in (first_stage_hybrid_retrievers or ())
+            ],
+            "first_stage_rrf_k": int(first_stage_rrf_k),
+        }
     raise ValueError(f"Unknown retriever: {name}")
 
 
@@ -405,6 +619,8 @@ __all__ = [
     "Bm25Retriever",
     "ChunkedBm25Retriever",
     "ChunkedTfidfRetriever",
+    "CrossEncoderRerankerRetriever",
+    "DocumentChunkStore",
     "ReciprocalRankFusionRetriever",
     "RetrieverProtocol",
     "TfidfRetriever",

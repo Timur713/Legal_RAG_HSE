@@ -102,6 +102,51 @@ def parse_args() -> argparse.Namespace:
         help="Reciprocal Rank Fusion constant for hybrid_rrf.",
     )
     parser.add_argument(
+        "--rerank-top-k",
+        type=int,
+        default=20,
+        help="How many first-stage candidates to rerank for cross_encoder_rerank.",
+    )
+    parser.add_argument(
+        "--reranker-model-name",
+        default="cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+        help="Hugging Face or SentenceTransformers model name for cross-encoder reranking.",
+    )
+    parser.add_argument(
+        "--reranker-batch-size",
+        type=int,
+        default=16,
+        help="Batch size for cross-encoder inference.",
+    )
+    parser.add_argument(
+        "--reranker-max-length",
+        type=int,
+        default=512,
+        help="Maximum tokenized sequence length for the cross-encoder.",
+    )
+    parser.add_argument(
+        "--reranker-device",
+        default=None,
+        help="Optional device override for cross-encoder, for example cuda or cpu.",
+    )
+    parser.add_argument(
+        "--first-stage-retriever",
+        default="hybrid_rrf",
+        help="First-stage retriever used by cross_encoder_rerank.",
+    )
+    parser.add_argument(
+        "--first-stage-hybrid-retrievers",
+        nargs="*",
+        default=("bm25", "chunked_bm25"),
+        help="Component retrievers for a hybrid first stage inside cross_encoder_rerank.",
+    )
+    parser.add_argument(
+        "--first-stage-rrf-k",
+        type=int,
+        default=60,
+        help="RRF constant for a hybrid first stage inside cross_encoder_rerank.",
+    )
+    parser.add_argument(
         "--save-test-predictions",
         action="store_true",
         help="Also fit on the full train corpus and save test predictions for submission generation.",
@@ -169,6 +214,36 @@ def validate_hybrid_args(args: argparse.Namespace) -> None:
         raise ValueError("hybrid_rrf cannot include hybrid_rrf as a component retriever.")
     if args.rrf_k <= 0:
         raise ValueError("rrf_k must be positive.")
+
+
+def validate_reranker_args(args: argparse.Namespace) -> None:
+    if args.retriever != "cross_encoder_rerank":
+        return
+
+    if args.rerank_top_k <= 0:
+        raise ValueError("rerank_top_k must be positive.")
+    if args.reranker_batch_size <= 0:
+        raise ValueError("reranker_batch_size must be positive.")
+    if args.reranker_max_length <= 0:
+        raise ValueError("reranker_max_length must be positive.")
+    if args.first_stage_retriever == "cross_encoder_rerank":
+        raise ValueError("cross_encoder_rerank cannot use cross_encoder_rerank as its first stage.")
+    if args.first_stage_retriever == "hybrid_rrf":
+        if len(args.first_stage_hybrid_retrievers) < 2:
+            raise ValueError(
+                "A hybrid first stage for cross_encoder_rerank requires at least two retrievers "
+                "in --first-stage-hybrid-retrievers."
+            )
+        if args.first_stage_rrf_k <= 0:
+            raise ValueError("first_stage_rrf_k must be positive.")
+
+
+def validate_runtime_args(args: argparse.Namespace, retrieve_k: int) -> None:
+    if args.retriever == "cross_encoder_rerank" and args.rerank_top_k < retrieve_k:
+        raise ValueError(
+            f"rerank_top_k={args.rerank_top_k} is smaller than retrieve_k={retrieve_k}. "
+            "Increase --rerank-top-k or lower the requested metric/retrieve depth."
+        )
 
 
 def compute_recall_metrics(
@@ -261,6 +336,8 @@ def main() -> int:
     metric_ks = get_metric_ks(args)
     retrieve_k = get_retrieve_k(args, metric_ks)
     validate_hybrid_args(args)
+    validate_reranker_args(args)
+    validate_runtime_args(args, retrieve_k)
 
     paths = load_paths_config(args.paths)
     ensure_output_dirs(paths)
@@ -289,6 +366,14 @@ def main() -> int:
         use_lemmas=args.use_lemmas,
         hybrid_retrievers=args.hybrid_retrievers,
         rrf_k=args.rrf_k,
+        rerank_top_k=args.rerank_top_k,
+        reranker_model_name=args.reranker_model_name,
+        reranker_batch_size=args.reranker_batch_size,
+        reranker_max_length=args.reranker_max_length,
+        reranker_device=args.reranker_device,
+        first_stage_retriever=args.first_stage_retriever,
+        first_stage_hybrid_retrievers=args.first_stage_hybrid_retrievers,
+        first_stage_rrf_k=args.first_stage_rrf_k,
     )
     retriever_runtime_params = {
         key: value

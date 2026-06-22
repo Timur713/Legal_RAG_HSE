@@ -204,6 +204,29 @@ python scripts/run_baseline_validation.py \
   --save-test-predictions
 ```
 
+Cross-encoder reranker поверх текущего лучшего sparse first-stage:
+
+```bash
+python scripts/run_baseline_validation.py \
+  --paths configs/paths.local.yaml \
+  --experiment-name cross_encoder_rerank_hybrid_bm25_chunked_bm25_lemma_validation \
+  --retriever cross_encoder_rerank \
+  --top-k 5 \
+  --extra-metric-k 20 \
+  --retrieve-k 20 \
+  --rerank-top-k 20 \
+  --use-lemmas \
+  --chunk-size 1600 \
+  --chunk-stride 800 \
+  --first-stage-retriever hybrid_rrf \
+  --first-stage-hybrid-retrievers bm25 chunked_bm25 \
+  --first-stage-rrf-k 60 \
+  --reranker-model-name cross-encoder/mmarco-mMiniLMv2-L12-H384-v1 \
+  --reranker-batch-size 16 \
+  --reranker-max-length 512 \
+  --save-test-predictions
+```
+
 Скрипт сохраняет:
 
 - `strict_cv` и `strict_holdout` предсказания в `outputs/predictions/`
