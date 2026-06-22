@@ -1,0 +1,5 @@
+experiment_name,retriever_name,chunk_score_aggregation,chunk_score_top_k,metric_name,strict_cv_mean,strict_cv_std,strict_holdout
+chunk_pooling_sweep_chunked_bm25_mean_topk,chunked_bm25,mean_topk,3,recall@5,0.5341531198648053,0.08372308362877005,0.3586206896551724
+chunk_pooling_sweep_chunked_bm25_logsumexp,chunked_bm25,logsumexp,3,recall@5,0.5213066435445395,0.08029811378388024,0.38620689655172413
+chunk_pooling_sweep_chunked_bm25_top2_sum,chunked_bm25,top2_sum,3,recall@5,0.5155984628363587,0.07993390409669983,0.35172413793103446
+chunk_pooling_sweep_chunked_bm25_max,chunked_bm25,max,3,recall@5,0.5106138098038353,0.08120366022912631,0.3793103448275862

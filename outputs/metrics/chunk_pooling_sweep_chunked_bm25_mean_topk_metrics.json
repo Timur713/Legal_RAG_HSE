@@ -1,0 +1,77 @@
+{
+  "experiment_name": "chunk_pooling_sweep_chunked_bm25_mean_topk",
+  "retriever_name": "chunked_bm25",
+  "retriever_params": {
+    "name": "chunked_bm25",
+    "chunk_size": 1600,
+    "chunk_stride": 800,
+    "use_lemmas": true,
+    "chunk_score_aggregation": "mean_topk",
+    "chunk_score_top_k": 3
+  },
+  "metric_name": "recall@5",
+  "metric_value": 0.3586206896551724,
+  "strict_cv_mean": 0.5341531198648053,
+  "strict_cv_std": 0.08372308362877005,
+  "strict_holdout": 0.3586206896551724,
+  "num_documents": 468,
+  "num_train_queries": 700,
+  "num_dev_queries": 555,
+  "num_holdout_queries": 145,
+  "top_k": 5,
+  "retrieve_k": 20,
+  "extra_metric_ks": [
+    20
+  ],
+  "validation_splits": "/content/legal-rag-hackathon/data/processed/validation/validation_splits.csv",
+  "fold_metrics": [
+    {
+      "split": "strict_cv",
+      "fold": 0,
+      "num_train_queries": 391,
+      "num_val_queries": 164,
+      "num_val_gold_docs": 22,
+      "recall@5": 0.6524390243902439,
+      "recall@20": 0.9024390243902439
+    },
+    {
+      "split": "strict_cv",
+      "fold": 1,
+      "num_train_queries": 421,
+      "num_val_queries": 134,
+      "num_val_gold_docs": 22,
+      "recall@5": 0.4925373134328358,
+      "recall@20": 0.753731343283582
+    },
+    {
+      "split": "strict_cv",
+      "fold": 2,
+      "num_train_queries": 415,
+      "num_val_queries": 140,
+      "num_val_gold_docs": 23,
+      "recall@5": 0.5642857142857143,
+      "recall@20": 0.7857142857142857
+    },
+    {
+      "split": "strict_cv",
+      "fold": 3,
+      "num_train_queries": 438,
+      "num_val_queries": 117,
+      "num_val_gold_docs": 23,
+      "recall@5": 0.42735042735042733,
+      "recall@20": 0.6837606837606838
+    }
+  ],
+  "all_metrics": {
+    "recall@5": {
+      "strict_cv_mean": 0.5341531198648053,
+      "strict_cv_std": 0.08372308362877005,
+      "strict_holdout": 0.3586206896551724
+    },
+    "recall@20": {
+      "strict_cv_mean": 0.7814113342871989,
+      "strict_cv_std": 0.0790064057733208,
+      "strict_holdout": 0.7448275862068966
+    }
+  }
+}
