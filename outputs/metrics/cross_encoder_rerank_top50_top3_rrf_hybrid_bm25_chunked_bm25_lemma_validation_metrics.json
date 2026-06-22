@@ -1,0 +1,101 @@
+{
+  "experiment_name": "cross_encoder_rerank_top50_top3_rrf_hybrid_bm25_chunked_bm25_lemma_validation",
+  "retriever_name": "cross_encoder_rerank",
+  "retriever_params": {
+    "name": "cross_encoder_rerank",
+    "chunk_size": 1600,
+    "chunk_stride": 800,
+    "use_lemmas": true,
+    "rerank_top_k": 50,
+    "reranker_model_name": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+    "reranker_batch_size": 16,
+    "reranker_max_length": 512,
+    "reranker_device": "cuda",
+    "reranker_chunks_per_doc": 3,
+    "reranker_combine_mode": "rrf",
+    "reranker_ce_weight": 0.7,
+    "reranker_sparse_weight": 0.3,
+    "reranker_rrf_k": 60,
+    "first_stage_retriever": "hybrid_rrf",
+    "first_stage_hybrid_retrievers": [
+      "bm25",
+      "chunked_bm25"
+    ],
+    "first_stage_rrf_k": 60
+  },
+  "metric_name": "recall@5",
+  "metric_value": 0.47586206896551725,
+  "strict_cv_mean": 0.5582202895999765,
+  "strict_cv_std": 0.07463572637614824,
+  "strict_holdout": 0.47586206896551725,
+  "num_documents": 468,
+  "num_train_queries": 700,
+  "num_dev_queries": 555,
+  "num_holdout_queries": 145,
+  "top_k": 5,
+  "retrieve_k": 50,
+  "extra_metric_ks": [
+    20,
+    50
+  ],
+  "validation_splits": "/content/legal-rag-hackathon/data/processed/validation/validation_splits.csv",
+  "fold_metrics": [
+    {
+      "split": "strict_cv",
+      "fold": 0,
+      "num_train_queries": 391,
+      "num_val_queries": 164,
+      "num_val_gold_docs": 22,
+      "recall@5": 0.6158536585365854,
+      "recall@20": 0.8902439024390244,
+      "recall@50": 0.9695121951219512
+    },
+    {
+      "split": "strict_cv",
+      "fold": 1,
+      "num_train_queries": 421,
+      "num_val_queries": 134,
+      "num_val_gold_docs": 22,
+      "recall@5": 0.5597014925373134,
+      "recall@20": 0.7835820895522388,
+      "recall@50": 0.8507462686567164
+    },
+    {
+      "split": "strict_cv",
+      "fold": 2,
+      "num_train_queries": 415,
+      "num_val_queries": 140,
+      "num_val_gold_docs": 23,
+      "recall@5": 0.6214285714285714,
+      "recall@20": 0.8285714285714286,
+      "recall@50": 0.9071428571428571
+    },
+    {
+      "split": "strict_cv",
+      "fold": 3,
+      "num_train_queries": 438,
+      "num_val_queries": 117,
+      "num_val_gold_docs": 23,
+      "recall@5": 0.4358974358974359,
+      "recall@20": 0.7435897435897436,
+      "recall@50": 0.8888888888888888
+    }
+  ],
+  "all_metrics": {
+    "recall@5": {
+      "strict_cv_mean": 0.5582202895999765,
+      "strict_cv_std": 0.07463572637614824,
+      "strict_holdout": 0.47586206896551725
+    },
+    "recall@20": {
+      "strict_cv_mean": 0.8114967910381089,
+      "strict_cv_std": 0.054505156758517394,
+      "strict_holdout": 0.7586206896551724
+    },
+    "recall@50": {
+      "strict_cv_mean": 0.9040725524526034,
+      "strict_cv_std": 0.042912730588598264,
+      "strict_holdout": 0.896551724137931
+    }
+  }
+}
