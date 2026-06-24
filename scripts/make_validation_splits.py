@@ -18,6 +18,8 @@ from legal_rag.validation import (  # noqa: E402
     build_validation_assignments,
     summarize_folds,
     summarize_holdout,
+    summarize_topic_diagnostics,
+    summarize_topic_stats,
     summarize_relaxed_doc_leakage,
 )
 
@@ -44,7 +46,13 @@ def parse_args() -> argparse.Namespace:
         "--min-topic-count-for-stratify",
         type=int,
         default=10,
-        help="Topics with fewer examples are merged into a rare bucket for splitting.",
+        help="Topics with fewer questions are merged into a rare bucket for splitting.",
+    )
+    parser.add_argument(
+        "--min-topic-doc-count-multiplier-for-stratify",
+        type=int,
+        default=1,
+        help="Topics with fewer than multiplier * n_splits unique gold_doc_id are merged into a rare bucket.",
     )
     return parser.parse_args()
 
@@ -66,13 +74,63 @@ def main() -> int:
     config = ValidationConfig(
         random_state=args.random_state,
         min_topic_count_for_stratify=args.min_topic_count_for_stratify,
+        min_topic_doc_count_multiplier_for_stratify=args.min_topic_doc_count_multiplier_for_stratify,
     )
     assignments, metadata = build_validation_assignments(train, config=config)
 
     holdout_summary = summarize_holdout(assignments)
     strict_cv_summary = summarize_folds(assignments, "strict_cv_fold")
     relaxed_cv_summary = summarize_folds(assignments, "relaxed_cv_fold")
+    holdout_topic_stats = summarize_topic_stats(
+        assignments,
+        min_question_count=config.min_topic_count_for_stratify,
+        min_unique_gold_doc_count=metadata["holdout_min_unique_gold_doc_count_for_stratify"],
+    )
+    strict_topic_stats = summarize_topic_stats(
+        assignments[assignments["strict_holdout_role"] == "dev"].copy(),
+        min_question_count=config.min_topic_count_for_stratify,
+        min_unique_gold_doc_count=metadata["strict_min_unique_gold_doc_count_for_stratify"],
+    )
+    strict_topic_diagnostics = summarize_topic_diagnostics(assignments, fold_column="strict_cv_fold")
+    relaxed_topic_diagnostics = summarize_topic_diagnostics(assignments, fold_column="relaxed_cv_fold")
     relaxed_leakage_summary = summarize_relaxed_doc_leakage(assignments).round(3)
+    holdout_candidate_scores = pd.DataFrame(metadata["holdout_candidate_scores"]).round(3)
+    metadata_table = pd.DataFrame(
+        [
+            {
+                "holdout_fold": metadata["holdout_fold"],
+                "holdout_splits": metadata["holdout_splits"],
+                "strict_cv_splits": metadata["strict_cv_splits"],
+                "relaxed_cv_splits": metadata["relaxed_cv_splits"],
+                "relaxed_cv_strategy": metadata["relaxed_cv_strategy"],
+                "min_topic_count_for_stratify": metadata["min_topic_count_for_stratify"],
+                "min_topic_doc_count_multiplier_for_stratify": metadata[
+                    "min_topic_doc_count_multiplier_for_stratify"
+                ],
+                "holdout_min_unique_gold_doc_count_for_stratify": metadata[
+                    "holdout_min_unique_gold_doc_count_for_stratify"
+                ],
+                "strict_min_unique_gold_doc_count_for_stratify": metadata[
+                    "strict_min_unique_gold_doc_count_for_stratify"
+                ],
+                "random_state": metadata["random_state"],
+                "topics_total": metadata["topics_total"],
+                "gold_docs_total": metadata["gold_docs_total"],
+                "multi_topic_gold_docs": metadata["multi_topic_gold_docs"],
+                "max_topics_per_gold_doc": metadata["max_topics_per_gold_doc"],
+            }
+        ]
+    )
+    strict_largest_deviations = (
+        strict_topic_diagnostics["largest_topic_deviations"]
+        .head(20)
+        .round({"full_share": 3, "fold_share": 3, "abs_deviation": 3})
+    )
+    relaxed_largest_deviations = (
+        relaxed_topic_diagnostics["largest_topic_deviations"]
+        .head(20)
+        .round({"full_share": 3, "fold_share": 3, "abs_deviation": 3})
+    )
 
     assignments_path = output_dir / "validation_splits.csv"
     metadata_path = output_dir / "validation_metadata.json"
@@ -95,8 +153,17 @@ def main() -> int:
         "как модель ведет себя в более легком сценарии `новый вопрос про уже знакомый документ`."
     )
     protocol_lines.append(
-        "- Темы с очень малым числом примеров объединяются в редкую корзину при разбиении, "
-        "иначе стратификация на 4-5 фолдов получается шумной."
+        "- Темы с очень малым числом вопросов или уникальных `gold_doc_id` объединяются в редкую корзину, "
+        "потому что для `StratifiedGroupKFold` важна не только частота строк, но и число доступных групп."
+    )
+    protocol_lines.append("")
+    protocol_lines.append("## Ограничения данных")
+    protocol_lines.append("")
+    protocol_lines.append(
+        f"- В train {metadata['multi_topic_gold_docs']} `gold_doc_id` встречаются более чем в одной теме; максимум тем на один документ: {metadata['max_topics_per_gold_doc']}."
+    )
+    protocol_lines.append(
+        "- Поэтому `strict` разбиение является в первую очередь group-valid по `gold_doc_id`, а topic-стратификация в нем неизбежно шумная."
     )
     protocol_lines.append("")
     protocol_lines.append("## Что использовать в работе")
@@ -108,7 +175,7 @@ def main() -> int:
         "- `strict_holdout_role=holdout` не трогать в цикле подбора гиперпараметров; использовать только для редких финальных проверок перед внешним сабмитом."
     )
     protocol_lines.append(
-        "- `relaxed_cv_fold` смотреть как дополнительный индикатор. Улучшение только в `relaxed`, но не в `strict`, считать подозрительным."
+        "- `relaxed_cv_fold` смотреть как дополнительный индикатор. Он строится только на `dev`; строки `strict_holdout_role=holdout` имеют `NA` и не должны попадать во вспомогательные CV-эксперименты."
     )
     protocol_lines.append("")
     protocol_lines.append("## Метрики для каждого эксперимента")
@@ -125,19 +192,59 @@ def main() -> int:
     protocol_lines.append("")
     protocol_lines.append("## Параметры протокола")
     protocol_lines.append("")
-    protocol_lines.append(format_table(pd.DataFrame([metadata]), index=False))
+    protocol_lines.append(format_table(metadata_table, index=False))
     protocol_lines.append("")
     protocol_lines.append("## Разбиение Holdout")
     protocol_lines.append("")
     protocol_lines.append(format_table(holdout_summary, index=False))
     protocol_lines.append("")
+    protocol_lines.append("## Редкие темы для Holdout")
+    protocol_lines.append("")
+    protocol_lines.append(format_table(holdout_topic_stats, index=False))
+    protocol_lines.append("")
+    protocol_lines.append("## Кандидаты Holdout")
+    protocol_lines.append("")
+    protocol_lines.append(
+        "Holdout выбирается не только по размеру и topic distribution, но и по числу `gold_doc_id`, нагрузке вопросов на документ и покрытию редких тем."
+    )
+    protocol_lines.append("")
+    protocol_lines.append(format_table(holdout_candidate_scores, index=False))
+    protocol_lines.append("")
     protocol_lines.append("## Разбиение Strict CV")
     protocol_lines.append("")
     protocol_lines.append(format_table(strict_cv_summary, index=False))
     protocol_lines.append("")
+    protocol_lines.append("## Редкие темы для Strict CV")
+    protocol_lines.append("")
+    protocol_lines.append(format_table(strict_topic_stats, index=False))
+    protocol_lines.append("")
+    protocol_lines.append("## Strict CV: вопросы по темам и фолдам")
+    protocol_lines.append("")
+    protocol_lines.append(format_table(strict_topic_diagnostics["topic_question_distribution"], index=False))
+    protocol_lines.append("")
+    protocol_lines.append("## Strict CV: уникальные gold_doc_id по темам и фолдам")
+    protocol_lines.append("")
+    protocol_lines.append(format_table(strict_topic_diagnostics["topic_gold_doc_distribution"], index=False))
+    protocol_lines.append("")
+    protocol_lines.append("## Strict CV: отсутствующие темы по фолдам")
+    protocol_lines.append("")
+    protocol_lines.append(format_table(strict_topic_diagnostics["missing_topics"], index=False))
+    protocol_lines.append("")
+    protocol_lines.append("## Strict CV: самые большие отклонения от полной topic distribution")
+    protocol_lines.append("")
+    protocol_lines.append(format_table(strict_largest_deviations, index=False))
+    protocol_lines.append("")
     protocol_lines.append("## Разбиение Relaxed CV")
     protocol_lines.append("")
     protocol_lines.append(format_table(relaxed_cv_summary, index=False))
+    protocol_lines.append("")
+    protocol_lines.append("## Relaxed CV: отсутствующие темы по фолдам")
+    protocol_lines.append("")
+    protocol_lines.append(format_table(relaxed_topic_diagnostics["missing_topics"], index=False))
+    protocol_lines.append("")
+    protocol_lines.append("## Relaxed CV: самые большие отклонения от полной topic distribution")
+    protocol_lines.append("")
+    protocol_lines.append(format_table(relaxed_largest_deviations, index=False))
     protocol_lines.append("")
     protocol_lines.append("## Leakage в Relaxed CV")
     protocol_lines.append("")
